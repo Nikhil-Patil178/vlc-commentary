@@ -50,7 +50,8 @@ namespace VlcCommentary
                     if (!st.HasMedia) { Log("--note: nothing playing"); return 2; }
                     var movie = MovieRef.From(st);
                     string type = args.Length >= 3 ? args[2] : NoteStore.Types[0];
-                    string file = NoteStore.Save(cfg, movie, st.Seconds, type, args[1]);
+                    int count;
+                    string file = NoteStore.Save(cfg, movie, st.Seconds, type, args[1], out count);
                     Log("--note: saved at " + NoteStore.Fmt(st.Seconds) + " to " + file);
                     return 0;
                 }
@@ -343,11 +344,34 @@ namespace VlcCommentary
 
         // Appends a note to this movie's .json file (found by movie id, not by name)
         // and regenerates the matching .md. Returns the .json path.
-        public static string Save(Config cfg, MovieRef movie, double seconds, string type, string content)
+        // All notes saved so far for this movie, in time order (empty if none).
+        public static List<Dictionary<string, object>> Load(Config cfg, MovieRef movie)
+        {
+            var result = new List<Dictionary<string, object>>();
+            try
+            {
+                if (!Directory.Exists(cfg.NotesDir)) return result;
+                var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                string path = FindExisting(cfg.NotesDir, movie, ser);
+                if (path == null) return result;
+                var doc = ser.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as Dictionary<string, object>;
+                object arr;
+                if (doc != null && doc.TryGetValue("notes", out arr) && arr is object[])
+                    foreach (var o in (object[])arr)
+                    {
+                        var d = o as Dictionary<string, object>;
+                        if (d != null) result.Add(d);
+                    }
+            }
+            catch (Exception ex) { Program.Log("loading saved notes failed: " + ex.Message); }
+            return result;
+        }
+
+        public static string Save(Config cfg, MovieRef movie, double seconds, string type, string content, out int count)
         {
             Directory.CreateDirectory(cfg.NotesDir);
             var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-            string jsonPath = FileFor(cfg.NotesDir, movie, ser);
+            string jsonPath = FindExisting(cfg.NotesDir, movie, ser) ?? NewFileName(cfg.NotesDir, movie);
 
             Dictionary<string, object> doc = null;
             if (File.Exists(jsonPath))
@@ -388,13 +412,14 @@ namespace VlcCommentary
 
             SafeFile.Write(jsonPath, ser.Serialize(output));
             SafeFile.Write(Path.ChangeExtension(jsonPath, ".md"), ToMarkdown(movie.Name, notes));
+            count = notes.Count;
             return jsonPath;
         }
 
         // The movie's existing file if any note file carries its id; otherwise a new
         // file named after the movie, with " (2)", " (3)"... if that name is taken by
         // a different movie.
-        static string FileFor(string dir, MovieRef movie, JavaScriptSerializer ser)
+        static string FindExisting(string dir, MovieRef movie, JavaScriptSerializer ser)
         {
             string legacyMatch = null;
             foreach (var f in Directory.GetFiles(dir, "*.json"))
@@ -412,7 +437,11 @@ namespace VlcCommentary
                 }
                 catch { }
             }
-            if (legacyMatch != null) return legacyMatch;
+            return legacyMatch;
+        }
+
+        static string NewFileName(string dir, MovieRef movie)
+        {
             string baseName = SafeName(movie.Name);
             for (int i = 1; ; i++)
             {
@@ -658,7 +687,8 @@ namespace VlcCommentary
         {
             current = draft;
             draftDirty = false;
-            openBox = new NoteBox(NoteStore.Fmt(draft.Seconds), draft.Movie.Name, draft.Text, draft.TypeIndex, recovered);
+            var saved = NoteStore.Load(cfg, draft.Movie);
+            openBox = new NoteBox(draft.Seconds, draft.Movie.Name, draft.Text, draft.TypeIndex, recovered, saved);
             openBox.Changed += delegate(string text, int typeIndex)
             {
                 current.Text = text;
@@ -679,16 +709,22 @@ namespace VlcCommentary
                 {
                     try
                     {
-                        string file = NoteStore.Save(cfg, draft.Movie, draft.Seconds, type, content);
+                        int count;
+                        string file = NoteStore.Save(cfg, draft.Movie, draft.Seconds, type, content, out count);
                         Recovery.Clear();
                         Program.Log("note saved at " + NoteStore.Fmt(draft.Seconds) + " to " + file);
+                        Toast.Pop("✓ Saved", NoteStore.Fmt(draft.Seconds) + "  ·  note " + count +
+                                  " for this movie", true);
+                        string tip = "VLC Commentary - last saved " + NoteStore.Fmt(draft.Seconds);
+                        tray.Text = tip.Length > 63 ? tip.Substring(0, 63) : tip;
                     }
                     catch (Exception ex)
                     {
                         // Keep the recovery copy so the note can be retried.
                         try { draft.Text = content; Recovery.Save(draft); } catch { }
                         try { Clipboard.SetText(content); } catch { }
-                        Tip("Note NOT saved (copied to clipboard)", ex.Message);
+                        Program.Log("save failed: " + ex.Message);
+                        Toast.Pop("✗ NOT saved", "Copied to clipboard. " + ex.Message, false);
                     }
                 }
                 if (pausedByUs) ResumeIfSameMovie(draft.Movie);
@@ -754,6 +790,87 @@ namespace VlcCommentary
         }
     }
 
+    // ------------------------------------------------------------------ "Saved" confirmation
+
+    // A small notice in the corner that never takes focus, so the movie keeps
+    // the keyboard. Disappears on its own.
+    class Toast : Form
+    {
+        [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int val, int size);
+
+        static Toast showing;
+
+        public static void Pop(string title, string detail, bool ok)
+        {
+            if (showing != null) showing.Close();
+            showing = new Toast(title, detail, ok);
+            showing.Show();
+        }
+
+        protected override bool ShowWithoutActivation { get { return true; } }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var cp = base.CreateParams;
+                cp.ExStyle |= 0x08000000 /* NOACTIVATE */ | 0x80 /* TOOLWINDOW */ | 0x8 /* TOPMOST */;
+                return cp;
+            }
+        }
+
+        Toast(string title, string detail, bool ok)
+        {
+            float k;
+            using (var g = CreateGraphics()) k = g.DpiX / 96f;
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.Manual;
+            BackColor = Color.FromArgb(24, 24, 27);
+            Opacity = 0.94;
+            Size = new Size((int)(320 * k), (int)(60 * k));
+            Padding = new Padding((int)(14 * k), (int)(8 * k), (int)(14 * k), (int)(6 * k));
+
+            var top = new Label
+            {
+                Dock = DockStyle.Top,
+                Height = (int)(24 * k),
+                Font = new Font("Segoe UI Semibold", 10.5f),
+                ForeColor = ok ? Color.FromArgb(74, 222, 128) : Color.FromArgb(248, 113, 113),
+                Text = title
+            };
+            var bottom = new Label
+            {
+                Dock = DockStyle.Fill,
+                AutoEllipsis = true,
+                Font = new Font("Segoe UI", 9f),
+                ForeColor = Color.FromArgb(212, 212, 216),
+                Text = detail
+            };
+            Controls.Add(bottom);
+            Controls.Add(top);
+
+            var screen = Screen.FromPoint(Cursor.Position).Bounds;
+            Location = new Point(screen.Right - Width - (int)(32 * k), screen.Top + (int)(32 * k));
+
+            var timer = new System.Windows.Forms.Timer { Interval = ok ? 1800 : 6000 };
+            timer.Tick += delegate { timer.Stop(); timer.Dispose(); Close(); };
+            timer.Start();
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            try { int round = 2; DwmSetWindowAttribute(Handle, 33, ref round, 4); } catch { }
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            if (showing == this) showing = null;
+            base.OnFormClosed(e);
+        }
+    }
+
     // ------------------------------------------------------------------ the note popup
 
     class NoteBox : Form
@@ -766,13 +883,21 @@ namespace VlcCommentary
 
         readonly TextBox text;
         readonly Label footer;
+        readonly Label history;
+        readonly int historyHeight;
+        readonly System.Windows.Forms.Timer holdTimer;
         int typeIndex;
         bool done;
+        bool tabDown;
+        bool historyShown;
 
-        public NoteBox(string timestamp, string movie, string initialText, int initialType, bool recovered)
+        public NoteBox(double seconds, string movie, string initialText, int initialType, bool recovered,
+                       List<Dictionary<string, object>> saved)
         {
             float k;
             using (var g = CreateGraphics()) k = g.DpiX / 96f;
+            string timestamp = NoteStore.Fmt(seconds);
+            KeyPreview = true;
 
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
@@ -813,7 +938,8 @@ namespace VlcCommentary
                 AutoEllipsis = true,
                 ForeColor = recovered ? Color.FromArgb(250, 204, 21) : Color.FromArgb(255, 160, 60),
                 Font = new Font("Segoe UI Semibold", 10f),
-                Text = (recovered ? "RECOVERED  " : "\u25CF ") + timestamp + "    " + movie
+                Text = (recovered ? "RECOVERED  " : "\u25CF ") + timestamp + "   \u00B7  " +
+                       saved.Count + " saved   \u00B7  " + movie
             };
             footer = new Label
             {
@@ -824,10 +950,28 @@ namespace VlcCommentary
                 Font = new Font("Segoe UI", 8.5f)
             };
 
+            // Past notes for this movie, shown while Tab is held down.
+            string historyText = BuildHistory(saved, seconds, timestamp);
+            historyHeight = (int)((historyText.Split('\n').Length * 19 + 14) * k);
+            history = new Label
+            {
+                Dock = DockStyle.Bottom,
+                Height = historyHeight,
+                Visible = false,
+                BackColor = Color.FromArgb(32, 32, 36),
+                ForeColor = Color.FromArgb(212, 212, 216),
+                Font = new Font("Segoe UI", 9f),
+                Padding = new Padding((int)(8 * k), (int)(6 * k), (int)(8 * k), (int)(4 * k)),
+                Text = historyText
+            };
+            holdTimer = new System.Windows.Forms.Timer { Interval = 300 };
+            holdTimer.Tick += delegate { holdTimer.Stop(); ShowHistory(true); };
+
             // Docking is laid out from the last-added control backwards: Fill goes first.
             Controls.Add(editorPanel);
             Controls.Add(header);
             Controls.Add(footer);
+            Controls.Add(history);
             UpdateFooter();
 
             // Top-right of the screen the mouse is on: clear of subtitles.
@@ -857,22 +1001,77 @@ namespace VlcCommentary
 
         void UpdateFooter()
         {
-            footer.Text = "Type: " + NoteStore.Types[typeIndex] + " (Tab)    Enter save    Shift+Enter new line    Esc cancel";
+            footer.Text = NoteStore.Types[typeIndex] + " (tap Tab)    Hold Tab: past notes    Enter: save    Esc: cancel";
+        }
+
+        void CycleType(int step)
+        {
+            typeIndex = (typeIndex + step + NoteStore.Types.Length) % NoteStore.Types.Length;
+            UpdateFooter();
+            RaiseChanged();
+        }
+
+        void ShowHistory(bool on)
+        {
+            if (on == historyShown) return;
+            historyShown = on;
+            history.Visible = on;
+            Height += on ? historyHeight : -historyHeight;
+        }
+
+        // Saved notes in time order with a marker where this note will land.
+        // Shows up to 7 lines around the marker.
+        static string BuildHistory(List<Dictionary<string, object>> saved, double now, string nowTs)
+        {
+            if (saved.Count == 0) return "No saved notes for this movie yet. This will be the first.";
+            var lines = new List<string>();
+            int marker = -1;
+            foreach (var n in saved)
+            {
+                object v;
+                double s = n.TryGetValue("seconds", out v) ? Convert.ToDouble(v, CultureInfo.InvariantCulture) : 0;
+                if (marker < 0 && s > now) { marker = lines.Count; lines.Add("▶ " + nowTs + "   this note"); }
+                string content = n.TryGetValue("content", out v) ? Convert.ToString(v) : "";
+                content = content.Replace("\r", " ").Replace("\n", " ");
+                if (content.Length > 58) content = content.Substring(0, 57) + "…";
+                lines.Add((n.TryGetValue("timestamp", out v) ? Convert.ToString(v) : "") + "   " + content);
+            }
+            if (marker < 0) { marker = lines.Count; lines.Add("▶ " + nowTs + "   this note"); }
+
+            const int max = 7;
+            int start = Math.Max(0, Math.Min(marker - max / 2, lines.Count - max));
+            var sb = new StringBuilder();
+            sb.AppendLine("Saved for this movie: " + saved.Count);
+            for (int i = start; i < Math.Min(lines.Count, start + max); i++) sb.AppendLine(lines[i]);
+            return sb.ToString().TrimEnd();
         }
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
             if (keyData == Keys.Escape) { Finish(null); return true; }
             if (keyData == Keys.Enter) { Finish(text.Text); return true; }
-            if (keyData == Keys.Tab || keyData == (Keys.Shift | Keys.Tab))
+            if (keyData == Keys.Tab)
             {
-                int step = keyData == Keys.Tab ? 1 : NoteStore.Types.Length - 1;
-                typeIndex = (typeIndex + step) % NoteStore.Types.Length;
-                UpdateFooter();
-                RaiseChanged();
+                // Tap = change type (decided on release); hold = show past notes.
+                bool autoRepeat = ((long)msg.LParam & 0x40000000) != 0;
+                if (!autoRepeat && !tabDown) { tabDown = true; holdTimer.Start(); }
                 return true;
             }
+            if (keyData == (Keys.Shift | Keys.Tab)) { CycleType(-1); return true; }
             return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        protected override void OnKeyUp(KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Tab && tabDown)
+            {
+                tabDown = false;
+                e.Handled = true;
+                if (historyShown) ShowHistory(false);
+                else { holdTimer.Stop(); CycleType(1); }
+                return;
+            }
+            base.OnKeyUp(e);
         }
 
         // If focus moves away (you click the movie, or VLC grabs focus when a file

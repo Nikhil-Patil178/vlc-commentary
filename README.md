@@ -47,8 +47,14 @@ The installer:
 | `Ctrl+Alt+N` | Open the note box; the timestamp is captured at this moment |
 | `Enter` | Save and close |
 | `Shift+Enter` | New line |
-| `Tab` / `Shift+Tab` | Change type: Observation, Interpretation, Emotion, Question |
+| Tap `Tab` / `Shift+Tab` | Change type: Observation, Interpretation, Emotion, Question |
+| Hold `Tab` | Show the notes already saved for this movie, with ▶ where this one will go |
 | `Esc` | Cancel |
+
+After Enter, a green **✓ Saved · note N for this movie** appears in the corner
+for about 2 seconds, without taking focus from VLC. If a save fails, a red notice
+says so and your text is copied to the clipboard. The box header shows how many
+notes this movie already has, and the tray icon's tooltip shows the last save time.
 
 - The box appears in the top-right corner, clear of subtitles.
 - The movie keeps playing. To pause while you type, right-click the tray icon and
