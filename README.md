@@ -11,7 +11,7 @@ in the movie, so later you can see what you thought and felt about each scene.
 Built for **film school students**, film studies classes, critics, video essayists and anyone who keeps a film diary.
 Free, for Windows 10/11.
 
-**[⬇ Download VlcCommentarySetup.exe](../../releases/latest)** · [Website]((https://nikhil-patil178.github.io/vlc-commentary/))
+**[⬇ Download VlcCommentarySetup.exe](../../releases/latest)** · [Website](https://nikhil-patil178.github.io/vlc-commentary/)
 
 ---
 
