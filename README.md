@@ -51,10 +51,8 @@ The installer:
 | Hold `Tab` | Show the notes already saved for this movie, with ▶ where this one will go |
 | `Esc` | Cancel |
 
-After Enter, a green **✓ Saved · note N for this movie** appears in the corner
-for about 2 seconds, without taking focus from VLC. If a save fails, a red notice
-says so and your text is copied to the clipboard. The box header shows how many
-notes this movie already has, and the tray icon's tooltip shows the last save time.
+Saving is silent. To check what's saved, hold `Tab` in the note box. Only a failed
+save shows a notice (red, in the corner), and your text is copied to the clipboard.
 
 - The box appears in the top-right corner, clear of subtitles.
 - The movie keeps playing. To pause while you type, right-click the tray icon and

@@ -712,11 +712,7 @@ namespace VlcCommentary
                         int count;
                         string file = NoteStore.Save(cfg, draft.Movie, draft.Seconds, type, content, out count);
                         Recovery.Clear();
-                        Program.Log("note saved at " + NoteStore.Fmt(draft.Seconds) + " to " + file);
-                        Toast.Pop("✓ Saved", NoteStore.Fmt(draft.Seconds) + "  ·  note " + count +
-                                  " for this movie", true);
-                        string tip = "VLC Commentary - last saved " + NoteStore.Fmt(draft.Seconds);
-                        tray.Text = tip.Length > 63 ? tip.Substring(0, 63) : tip;
+                        Program.Log("note saved at " + NoteStore.Fmt(draft.Seconds) + " (" + count + " total) to " + file);
                     }
                     catch (Exception ex)
                     {
@@ -938,8 +934,7 @@ namespace VlcCommentary
                 AutoEllipsis = true,
                 ForeColor = recovered ? Color.FromArgb(250, 204, 21) : Color.FromArgb(255, 160, 60),
                 Font = new Font("Segoe UI Semibold", 10f),
-                Text = (recovered ? "RECOVERED  " : "\u25CF ") + timestamp + "   \u00B7  " +
-                       saved.Count + " saved   \u00B7  " + movie
+                Text = (recovered ? "RECOVERED  " : "\u25CF ") + timestamp + "    " + movie
             };
             footer = new Label
             {
