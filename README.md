@@ -21,24 +21,32 @@ VLC's built-in web interface is switched on, listening on `127.0.0.1` only and
 protected by a random password. The tray app reads the playback position
 when you press the hotkey.
 
-## Install (Windows)
+## Install (Windows 10/11)
 
-Nothing extra to install. It's compiled with the C# compiler that ships with Windows.
-
-1. Close VLC.
-2. In this folder, run:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File install.ps1
-   ```
-   Add `-Startup` to launch it automatically when you sign in.
+1. Download **VlcCommentarySetup.exe** from the [latest release](../../releases/latest).
+2. Run it and click **Install**. If Windows SmartScreen warns about an unknown
+   publisher (the exe isn't code-signed), click **More info → Run anyway**.
 3. Open a movie in VLC and press **Ctrl+Alt+N**.
 
-The installer:
-- builds `bin\VlcCommentary.exe`
-- backs up `%APPDATA%\vlc\vlcrc`, then enables the web interface
-  (`extraintf=http`, `http-host=127.0.0.1`, `http-port=8765`, a random `http-password`)
-- writes `%APPDATA%\VlcCommentary\config.ini`
-- adds a Start menu shortcut and starts the app (orange icon in the system tray)
+No admin rights needed, except when the installer has to install VLC itself. Setup:
+- installs **VLC** with winget if it's missing
+- installs the app to `%LOCALAPPDATA%\Programs\VLC Commentary`
+- backs up `%APPDATA%\vlc\vlcrc`, then turns on VLC's web interface: `127.0.0.1`
+  only, random password, first free port from 8765 (8080 is often taken by Steam)
+- installs **FFmpeg** with winget, for saving subtitles (optional checkbox)
+- adds a Start menu shortcut, optionally starts the app when you sign in, and
+  registers an uninstaller under **Settings → Apps**
+
+Running it again upgrades in place and keeps your settings and notes.
+
+### Build from source
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build.ps1    # -> dist\VlcCommentarySetup.exe
+powershell -ExecutionPolicy Bypass -File install.ps1  # build + run the installer
+```
+
+Only the C# compiler that ships with Windows (.NET Framework 4) is needed.
 
 ## Using it
 
@@ -125,16 +133,17 @@ ffmpeg=                 # optional path to ffmpeg.exe; found automatically other
 Check `%APPDATA%\VlcCommentary\log.txt` first.
 
 - **"Can't reach VLC"**: VLC must be restarted once after install. If another
-  program uses port 8765, run `install.ps1 -Port 8790` (any free port).
-- **"VLC rejected the password"**: run `install.ps1` again with VLC closed.
+  program has taken the port since, run the installer again with VLC closed
+  and it will pick a free one.
+- **"VLC rejected the password"**: run the installer again with VLC closed.
 - **Hotkey unavailable**: another app owns it. Change `hotkey=` in config.ini.
 
 ## Uninstall
 
-1. Exit from the tray icon.
-2. Delete the Start menu / Startup shortcuts named *VLC Commentary*.
-3. To restore VLC's previous settings, copy the newest `%APPDATA%\vlc\vlcrc.bak-*`
-   over `vlcrc` (or untick *Web* in VLC → Tools → Preferences → All → Interface → Main interfaces).
+**Settings → Apps → VLC Commentary → Uninstall.** This removes the app and its
+shortcuts and turns off VLC's web interface. Your notes in
+`Documents\VLC Commentary` are kept, and VLC and FFmpeg stay installed.
+Your original VLC settings are also in `%APPDATA%\vlc\vlcrc.bak-*`.
 
 ## Roadmap
 
