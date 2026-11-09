@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VLC Commentary: timestamped film notes for VLC (free film journal for film students)</title>
+<meta name="description" content="Take timestamped notes on scenes, emotions and ideas while you watch a movie in VLC. Press Ctrl+Alt+N, write, keep watching. Free film analysis and film journal app for film school students, critics and video essayists. Windows 10/11.">
+<meta name="keywords" content="VLC notes, VLC plugin, VLC add-on, film analysis app, movie note taking, film studies, film school, film journal, film diary, scene analysis, emotional response, video essay, timestamped notes">
+<link rel="canonical" href="https://prashantpatil0707.github.io/vlc-commentary/">
+<link rel="icon" href="favicon.ico">
+<meta name="theme-color" content="#111114">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="VLC Commentary">
+<meta property="og:title" content="VLC Commentary: a film journal for VLC media player">
+<meta property="og:description" content="Timestamped notes on scenes and emotions while you watch. Built for film school students. Free for Windows.">
+<meta property="og:url" content="https://prashantpatil0707.github.io/vlc-commentary/">
+<meta property="og:image" content="https://prashantpatil0707.github.io/vlc-commentary/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A VLC Commentary note box showing a timestamped Emotion note over a film">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="VLC Commentary: a film journal for VLC media player">
+<meta name="twitter:description" content="Timestamped notes on scenes and emotions while you watch. Built for film school students. Free for Windows.">
+<meta name="twitter:image" content="https://prashantpatil0707.github.io/vlc-commentary/og-image.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "VLC Commentary",
+  "alternateName": "VLC Commentary film journal",
+  "description": "A companion app for VLC media player that lets you write timestamped notes about scenes, emotions, interpretations and questions while a film plays. Notes are saved per film with the film's subtitles. Built for film school students, film studies classes, critics and video essayists.",
+  "applicationCategory": "EducationalApplication",
+  "applicationSubCategory": "Film analysis, note taking",
+  "operatingSystem": "Windows 10, Windows 11",
+  "softwareVersion": "1.0.0",
+  "softwareRequirements": "VLC media player (installed automatically if missing)",
+  "url": "https://prashantpatil0707.github.io/vlc-commentary/",
+  "downloadUrl": "https://github.com/PrashantPatil0707/vlc-commentary/releases/latest/download/VlcCommentarySetup.exe",
+  "installUrl": "https://github.com/PrashantPatil0707/vlc-commentary/releases/latest",
+  "codeRepository": "https://github.com/PrashantPatil0707/vlc-commentary",
+  "image": "https://prashantpatil0707.github.io/vlc-commentary/og-image.png",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "audience": { "@type": "EducationalAudience", "educationalRole": "student", "audienceType": "Film school and film studies students" },
+  "featureList": [
+    "Global hotkey (Ctrl+Alt+N) opens a note box over the playing film",
+    "Notes saved with the exact playback timestamp from VLC",
+    "Note types: Observation, Interpretation, Emotion, Question",
+    "Hold Tab to see earlier notes for the film",
+    "One folder per film with Markdown and JSON notes plus the film's subtitles",
+    "Crash-safe saving and recovery of unfinished notes",
+    "Everything stays on your PC: no account, no cloud"
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Is there a VLC plugin for taking notes while watching a movie?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes. VLC Commentary is a free companion app for VLC on Windows. Press Ctrl+Alt+N while a film plays, type a note and press Enter; the note is saved with the exact timestamp and the film keeps playing." }
+    },
+    {
+      "@type": "Question",
+      "name": "How can film students take notes on a film without pausing it?",
+      "acceptedAnswer": { "@type": "Answer", "text": "With VLC Commentary, a hotkey opens a small note box in the corner of the screen. You write while the film keeps playing, and each note is stamped with the moment it refers to." }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I log my emotional reactions to a film scene by scene?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes. VLC Commentary has an Emotion note type. Each emotional reaction is saved with its timestamp, so you can trace how your feelings change across the film." }
+    },
+    {
+      "@type": "Question",
+      "name": "Where are the notes saved?",
+      "acceptedAnswer": { "@type": "Answer", "text": "In Documents\\VLC Commentary, in one folder per film, as Markdown and JSON files together with the film's subtitles. Nothing is uploaded." }
+    },
+    {
+      "@type": "Question",
+      "name": "Does VLC Commentary work on Mac or Linux?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Not yet. It currently supports Windows 10 and Windows 11." }
+    }
+  ]
+}
+</script>
+
+<style>
+  :root {
+    --bg: #fafaf9; --surface: #ffffff; --text: #18181b; --muted: #57575f; --line: #e4e4e7;
+    --accent: #e06f00; --accent-ink: #ffffff; --note-bg: #1b1b1f; --note-text: #f4f4f5; --note-muted: #a1a1aa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #111114; --surface: #1b1b1f; --text: #f4f4f5; --muted: #a1a1aa; --line: #2e2e33;
+      --accent: #ff8a1f; --accent-ink: #111114; --note-bg: #232328;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #111114; --surface: #1b1b1f; --text: #f4f4f5; --muted: #a1a1aa; --line: #2e2e33;
+    --accent: #ff8a1f; --accent-ink: #111114; --note-bg: #232328;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.6 "Segoe UI", system-ui, -apple-system, sans-serif; }
+  main { max-width: 880px; margin: 0 auto; padding: 0 16px 64px; }
+  header { padding: 56px 0 24px; }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .dot { width: 46px; height: 46px; border-radius: 50%; background: var(--accent); display: grid; place-items: center; flex: none; }
+  .dot span { display: block; width: 22px; height: 3.5px; background: #fff; border-radius: 2px; margin: 2.5px 0; }
+  .dot span:last-child { width: 15px; margin-right: 7px; }
+  h1 { font-size: clamp(30px, 6vw, 46px); line-height: 1.15; margin: 22px 0 12px; letter-spacing: -0.01em; }
+  .lede { font-size: 20px; color: var(--muted); margin: 0 0 28px; max-width: 680px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .btn { display: inline-block; padding: 13px 22px; border-radius: 10px; background: var(--accent); color: var(--accent-ink); font-weight: 600; text-decoration: none; }
+  .btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  .small { font-size: 14px; color: var(--muted); }
+  .note { background: var(--note-bg); color: var(--note-text); border-radius: 12px; padding: 18px 22px; margin: 40px 0 8px; box-shadow: 0 10px 30px rgba(0,0,0,.18); }
+  .note .ts { color: #ff9a3c; font-weight: 600; }
+  .note .hint { color: var(--note-muted); font-size: 13px; margin-top: 10px; }
+  h2 { font-size: 26px; margin: 56px 0 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .card h3 { margin: 0 0 6px; font-size: 17px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15.5px; }
+  ol li { margin: 6px 0; }
+  kbd { font: 14px Consolas, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px; background: var(--surface); }
+  pre { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; font-size: 14px; }
+  details { border-top: 1px solid var(--line); padding: 12px 0; }
+  summary { cursor: pointer; font-weight: 600; }
+  details p { color: var(--muted); margin: 8px 0 0; }
+  footer { border-top: 1px solid var(--line); margin-top: 56px; padding-top: 18px; font-size: 14px; color: var(--muted); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="brand">
+      <div class="dot" aria-hidden="true"><div><span></span><span></span><span></span></div></div>
+      <strong>VLC Commentary</strong>
+    </div>
+    <h1>A film journal for VLC.<br>Write while the movie plays.</h1>
+    <p class="lede">Take timestamped notes on scenes, emotions and ideas without pausing or leaving the film.
+      Built for film school students, critics and video essayists.</p>
+    <div class="cta">
+      <a class="btn" href="https://github.com/PrashantPatil0707/vlc-commentary/releases/latest/download/VlcCommentarySetup.exe">Download for Windows</a>
+      <a class="btn ghost" href="https://github.com/PrashantPatil0707/vlc-commentary">View on GitHub</a>
+      <span class="small">Free · Windows 10/11 · sets up VLC for you</span>
+    </div>
+
+    <div class="note" role="img" aria-label="Example note box over a film">
+      <div><span class="ts">● 01:12:43</span> &nbsp; Emotion</div>
+      <div style="margin-top:6px">The score drops out and the silence makes the goodbye unbearable.</div>
+      <div class="hint">Interpretation (tap Tab) · Hold Tab: past notes · Enter: save · Esc: cancel</div>
+    </div>
+    <p class="small">What you see while watching: a small box in the corner, and the film keeps playing.</p>
+  </header>
+
+  <h2>Made for studying films</h2>
+  <div class="grid">
+    <div class="card"><h3>Film school assignments</h3><p>Scene analysis, shot breakdowns and close readings with exact timestamps instead of guesses.</p></div>
+    <div class="card"><h3>Your emotional response</h3><p>Tag notes as <em>Emotion</em> the moment a scene hits you, and see how your feelings shift across the film.</p></div>
+    <div class="card"><h3>Video essays</h3><p>Collect timestamped observations and quotes for your script while you watch.</p></div>
+    <div class="card"><h3>Screenwriting and directing</h3><p>Mark structure, pacing and character turns in the films you study.</p></div>
+  </div>
+
+  <h2>How it works</h2>
+  <ol>
+    <li>Open a film in VLC.</li>
+    <li>Press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd>. A note box appears with the current time, e.g. <code>00:12:10</code>.</li>
+    <li>Write what you see, think or feel. Tap <kbd>Tab</kbd> to mark it as an Observation, Interpretation, Emotion or Question.</li>
+    <li>Press <kbd>Enter</kbd>. The note is saved and the box disappears. Hold <kbd>Tab</kbd> any time to see your earlier notes.</li>
+  </ol>
+  <p>Every film gets its own folder with your notes and its subtitles:</p>
+<pre>Documents\VLC Commentary\Taare Zameen Par\
+  Taare Zameen Par.md       ## [00:12:10] Emotion
+                            His father's voice makes me tense; the score drops out.
+  Taare Zameen Par.json
+  Taare Zameen Par.eng.srt  the film's subtitles, so you can quote dialogue</pre>
+
+  <h2>Features</h2>
+  <div class="grid">
+    <div class="card"><h3>Exact timestamps</h3><p>Read straight from VLC as you press the hotkey.</p></div>
+    <div class="card"><h3>Four note types</h3><p>Observation, Interpretation, Emotion, Question.</p></div>
+    <div class="card"><h3>Subtitles included</h3><p>Copied or extracted from the video into the film's folder.</p></div>
+    <div class="card"><h3>Never mixes films</h3><p>Each film is recognised by its video file, even if you rename it.</p></div>
+    <div class="card"><h3>Crash-safe</h3><p>An unfinished note survives a crash or power cut.</p></div>
+    <div class="card"><h3>Private</h3><p>Plain files on your PC. No account, no cloud, no tracking.</p></div>
+  </div>
+
+  <h2>Questions</h2>
+  <details open><summary>Is this a VLC plugin?</summary>
+    <p>It works like one. VLC's own extensions can't draw a note box over the video or listen for a hotkey, so VLC Commentary is a small companion app that talks to VLC through VLC's built-in web interface, which is limited to your own PC and password-protected. The installer sets it all up.</p></details>
+  <details><summary>Do I need to install anything else?</summary>
+    <p>No. The installer adds VLC if it's missing and FFmpeg for subtitles. No admin rights are needed except to install VLC.</p></details>
+  <details><summary>Windows says "unknown publisher". Is it safe?</summary>
+    <p>The installer isn't code-signed yet, so SmartScreen shows a warning. Click <em>More info → Run anyway</em>. The full source code is on GitHub.</p></details>
+  <details><summary>Mac or Linux?</summary>
+    <p>Not yet. Windows 10 and 11 only for now.</p></details>
+  <details><summary>Can I use the notes in my essay?</summary>
+    <p>Yes. They're Markdown files, which you can paste into Word, Google Docs, Notion or Obsidian. Export to SRT, so your commentary plays as subtitles, is planned.</p></details>
+
+  <footer>
+    VLC Commentary is an independent project and is not affiliated with VideoLAN. VLC is a trademark of VideoLAN.
+    · <a href="https://github.com/PrashantPatil0707/vlc-commentary">Source on GitHub</a>
+    · <a href="llms.txt">llms.txt</a>
+  </footer>
+</main>
+</body>
+</html>
