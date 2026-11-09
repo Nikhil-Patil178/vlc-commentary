@@ -64,6 +64,27 @@ Notes go to `Documents\VLC Commentary\`, one file per movie:
 
 Command-line mode, for scripts: `VlcCommentary.exe --note "text" [Type]`
 
+### Each movie keeps its own notes
+
+Notes are linked to a movie by a fingerprint of the video file (its size plus a
+hash of its first and last 64 KB), not by its name:
+
+- Switching movies never mixes notes. Each note belongs to whatever was playing
+  when you pressed the hotkey.
+- Two different films with the same filename get separate files (`Movie.json`,
+  `Movie (2).json`).
+- Renaming or moving a film keeps its notes attached.
+
+### Crash and power-cut safety
+
+- Saved notes are written to a temp file, flushed to the physical disk, then
+  swapped in. A power cut leaves the old file or the new one, never a broken one.
+- While the note box is open, your text is copied to disk every 1.5 seconds
+  with its movie and timestamp. After a crash, the next `Ctrl+Alt+N` reopens it,
+  marked RECOVERED, still attached to the original movie.
+- A notes file that can't be read is never overwritten. It's renamed to
+  `*.unreadable-<date>` and the `.md` copy still has your text.
+
 ## Settings
 
 `%APPDATA%\VlcCommentary\config.ini` (restart the app after editing):

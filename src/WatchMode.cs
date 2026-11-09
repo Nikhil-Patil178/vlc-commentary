@@ -13,6 +13,7 @@ using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
@@ -46,11 +47,11 @@ namespace VlcCommentary
                 {
                     var cfg = Config.Load();
                     var st = new VlcClient(cfg).GetStatus();
-                    if (st.State == "stopped" || (st.FileName == null && st.Title == null))
-                    { Log("--note: nothing playing"); return 2; }
+                    if (!st.HasMedia) { Log("--note: nothing playing"); return 2; }
+                    var movie = MovieRef.From(st);
                     string type = args.Length >= 3 ? args[2] : NoteStore.Types[0];
-                    NoteStore.Save(cfg, st, st.Seconds, type, args[1]);
-                    Log("--note: saved at " + NoteStore.Fmt(st.Seconds) + " in " + NoteStore.MovieName(st));
+                    string file = NoteStore.Save(cfg, movie, st.Seconds, type, args[1]);
+                    Log("--note: saved at " + NoteStore.Fmt(st.Seconds) + " to " + file);
                     return 0;
                 }
                 catch (Exception ex) { Log("--note failed: " + ex.Message); return 1; }
@@ -133,6 +134,38 @@ namespace VlcCommentary
         }
     }
 
+    // ------------------------------------------------------------------ crash-safe file writing
+
+    static class SafeFile
+    {
+        // Write to a temp file, force it onto the physical disk, then swap it in.
+        // A power cut leaves either the old file or the new one, never half of one.
+        public static void Write(string path, string text)
+        {
+            string tmp = path + ".tmp";
+            byte[] bytes = new UTF8Encoding(false).GetBytes(text);
+            using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None,
+                                           4096, FileOptions.WriteThrough))
+            {
+                fs.Write(bytes, 0, bytes.Length);
+                fs.Flush(true);
+            }
+            if (!File.Exists(path)) { File.Move(tmp, path); return; }
+            for (int attempt = 0; ; attempt++)
+            {
+                try { File.Replace(tmp, path, null); return; }
+                catch (IOException)
+                {
+                    // OneDrive or antivirus can briefly lock the file; retry, then fall back to copy.
+                    if (attempt < 3) { Thread.Sleep(150); continue; }
+                    File.Copy(tmp, path, true);
+                    File.Delete(tmp);
+                    return;
+                }
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ VLC web interface
 
     class VlcStatus
@@ -141,19 +174,21 @@ namespace VlcCommentary
         public double Seconds;   // current playback position
         public string FileName;
         public string Title;
+        public string Uri;       // full location of the current item, e.g. file:///C:/Movies/x.mkv
+
+        public bool HasMedia { get { return State != "stopped" && (FileName != null || Title != null); } }
     }
 
     class VlcClient
     {
         readonly Config cfg;
-        readonly JavaScriptSerializer json = new JavaScriptSerializer();
+        readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
 
         public VlcClient(Config c) { cfg = c; }
 
-        Dictionary<string, object> Request(string query)
+        Dictionary<string, object> Request(string path)
         {
-            var req = (HttpWebRequest)WebRequest.Create(
-                "http://127.0.0.1:" + cfg.Port + "/requests/status.json" + query);
+            var req = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + cfg.Port + path);
             req.Timeout = 1500;
             req.Proxy = null;
             req.Headers["Authorization"] = "Basic " +
@@ -165,7 +200,7 @@ namespace VlcCommentary
 
         public VlcStatus GetStatus()
         {
-            var d = Request("");
+            var d = Request("/requests/status.json");
             var s = new VlcStatus();
             s.State = Str(d, "state");
             double time = Num(d, "time"), length = Num(d, "length"), pos = Num(d, "position");
@@ -177,11 +212,28 @@ namespace VlcCommentary
                 s.FileName = Str(meta, "filename");
                 s.Title = Str(meta, "title");
             }
+            // status.json has no file path; the playlist marks the current item and has its URI.
+            try { s.Uri = FindCurrentUri(Request("/requests/playlist.json")); }
+            catch (Exception ex) { Program.Log("playlist lookup failed: " + ex.Message); }
             return s;
         }
 
-        public void Pause() { Request("?command=pl_forcepause"); }
-        public void Resume() { Request("?command=pl_forceresume"); }
+        public void Pause() { Request("/requests/status.json?command=pl_forcepause"); }
+        public void Resume() { Request("/requests/status.json?command=pl_forceresume"); }
+
+        static string FindCurrentUri(Dictionary<string, object> node)
+        {
+            if (node == null) return null;
+            if (Str(node, "current") == "current" && Str(node, "uri") != null) return Str(node, "uri");
+            object kids;
+            if (node.TryGetValue("children", out kids) && kids is object[])
+                foreach (var k in (object[])kids)
+                {
+                    var found = FindCurrentUri(k as Dictionary<string, object>);
+                    if (found != null) return found;
+                }
+            return null;
+        }
 
         static Dictionary<string, object> Dig(Dictionary<string, object> d, params string[] keys)
         {
@@ -194,7 +246,7 @@ namespace VlcCommentary
             return d;
         }
 
-        static string Str(Dictionary<string, object> d, string k)
+        internal static string Str(Dictionary<string, object> d, string k)
         {
             object o;
             return d != null && d.TryGetValue(k, out o) && o != null
@@ -206,6 +258,73 @@ namespace VlcCommentary
             object o;
             if (d == null || !d.TryGetValue(k, out o) || o == null) return 0;
             try { return Convert.ToDouble(o, CultureInfo.InvariantCulture); } catch { return 0; }
+        }
+    }
+
+    // ------------------------------------------------------------------ which movie is this?
+
+    // Identifies a movie by its content, not its name, so two different films that
+    // happen to share a filename never share notes, and renaming or moving a film
+    // keeps its notes attached.
+    class MovieRef
+    {
+        public string Id;        // file:<size>:<hash>, or uri:/name: for streams
+        public string Name;      // display name (filename without extension)
+        public string FileName;
+        public string Location;  // last known full path
+
+        public static MovieRef From(VlcStatus st)
+        {
+            var m = new MovieRef();
+            m.FileName = st.FileName;
+            m.Name = NoteStore.MovieName(st);
+            if (st.Uri != null)
+            {
+                try
+                {
+                    var u = new Uri(st.Uri);
+                    if (u.IsFile && File.Exists(u.LocalPath))
+                    {
+                        m.Location = u.LocalPath;
+                        m.Id = Fingerprint(u.LocalPath);
+                    }
+                }
+                catch (Exception ex) { Program.Log("fingerprint failed: " + ex.Message); }
+                if (m.Id == null) m.Id = "uri:" + st.Uri;
+            }
+            if (m.Id == null) m.Id = "name:" + (st.FileName ?? st.Title ?? "untitled");
+            return m;
+        }
+
+        // File size + MD5 of the first and last 64 KB. Reads 128 KB, so it's instant
+        // even for a 50 GB file.
+        static string Fingerprint(string path)
+        {
+            const int chunk = 65536;
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (var md5 = MD5.Create())
+            {
+                long len = fs.Length;
+                byte[] head = ReadAt(fs, 0, (int)Math.Min(chunk, len));
+                byte[] tail = len > chunk ? ReadAt(fs, Math.Max(chunk, len - chunk), (int)Math.Min(chunk, len - chunk)) : new byte[0];
+                md5.TransformBlock(head, 0, head.Length, null, 0);
+                md5.TransformFinalBlock(tail, 0, tail.Length);
+                return "file:" + len + ":" + BitConverter.ToString(md5.Hash, 0, 8).Replace("-", "").ToLowerInvariant();
+            }
+        }
+
+        static byte[] ReadAt(FileStream fs, long offset, int count)
+        {
+            var buf = new byte[count];
+            fs.Seek(offset, SeekOrigin.Begin);
+            int got = 0;
+            while (got < count)
+            {
+                int n = fs.Read(buf, got, count - got);
+                if (n <= 0) break;
+                got += n;
+            }
+            return buf;
         }
     }
 
@@ -222,13 +341,13 @@ namespace VlcCommentary
             return string.IsNullOrEmpty(noExt) ? n : noExt;
         }
 
-        // Appends a note to "<notes dir>\<movie>.json" and regenerates "<movie>.md".
-        public static void Save(Config cfg, VlcStatus st, double seconds, string type, string content)
+        // Appends a note to this movie's .json file (found by movie id, not by name)
+        // and regenerates the matching .md. Returns the .json path.
+        public static string Save(Config cfg, MovieRef movie, double seconds, string type, string content)
         {
             Directory.CreateDirectory(cfg.NotesDir);
-            string baseName = SafeName(MovieName(st));
-            string jsonPath = Path.Combine(cfg.NotesDir, baseName + ".json");
             var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+            string jsonPath = FileFor(cfg.NotesDir, movie, ser);
 
             Dictionary<string, object> doc = null;
             if (File.Exists(jsonPath))
@@ -260,13 +379,46 @@ namespace VlcCommentary
             notes.Sort((a, b) => Sec(a).CompareTo(Sec(b)));
 
             var output = new Dictionary<string, object>();
-            output["version"] = 1;
-            output["movie"] = baseName;
-            output["file"] = st.FileName;
+            output["version"] = 2;
+            output["movie_id"] = movie.Id;
+            output["movie"] = movie.Name;
+            output["file"] = movie.FileName;
+            output["path"] = movie.Location;
             output["notes"] = notes;
 
-            WriteAtomic(jsonPath, ser.Serialize(output));
-            WriteAtomic(Path.Combine(cfg.NotesDir, baseName + ".md"), ToMarkdown(baseName, notes));
+            SafeFile.Write(jsonPath, ser.Serialize(output));
+            SafeFile.Write(Path.ChangeExtension(jsonPath, ".md"), ToMarkdown(movie.Name, notes));
+            return jsonPath;
+        }
+
+        // The movie's existing file if any note file carries its id; otherwise a new
+        // file named after the movie, with " (2)", " (3)"... if that name is taken by
+        // a different movie.
+        static string FileFor(string dir, MovieRef movie, JavaScriptSerializer ser)
+        {
+            string legacyMatch = null;
+            foreach (var f in Directory.GetFiles(dir, "*.json"))
+            {
+                try
+                {
+                    var d = ser.DeserializeObject(File.ReadAllText(f, Encoding.UTF8)) as Dictionary<string, object>;
+                    string id = VlcClient.Str(d, "movie_id");
+                    if (id == movie.Id) return f;
+                    // Files from the first version have no movie_id. Adopt one with the
+                    // same filename; saving stamps the id, so it's matched by id from then on.
+                    if (id == null && legacyMatch == null && movie.FileName != null &&
+                        VlcClient.Str(d, "file") == movie.FileName)
+                        legacyMatch = f;
+                }
+                catch { }
+            }
+            if (legacyMatch != null) return legacyMatch;
+            string baseName = SafeName(movie.Name);
+            for (int i = 1; ; i++)
+            {
+                string p = Path.Combine(dir, baseName + (i == 1 ? "" : " (" + i + ")") + ".json");
+                if (!File.Exists(p)) return p;
+            }
         }
 
         static string ToMarkdown(string movie, List<object> notes)
@@ -306,13 +458,45 @@ namespace VlcCommentary
             s = s.Trim().TrimEnd('.');
             return s.Length == 0 ? "Untitled" : s;
         }
+    }
 
-        static void WriteAtomic(string path, string text)
+    // ------------------------------------------------------------------ unsaved-note recovery
+
+    // While the note box is open, what you've typed is copied to disk every couple
+    // of seconds, together with the movie and timestamp it belongs to. After a crash
+    // or power cut, the next hotkey press reopens that exact note.
+    class Draft
+    {
+        public MovieRef Movie;
+        public double Seconds;
+        public int TypeIndex;
+        public string Text = "";
+    }
+
+    static class Recovery
+    {
+        static string FilePath { get { return Path.Combine(Config.Dir, "unsaved-note.json"); } }
+
+        public static void Save(Draft d)
         {
-            string tmp = path + ".tmp";
-            File.WriteAllText(tmp, text, new UTF8Encoding(false));
-            if (File.Exists(path)) File.Replace(tmp, path, null);
-            else File.Move(tmp, path);
+            Directory.CreateDirectory(Config.Dir);
+            SafeFile.Write(FilePath, new JavaScriptSerializer().Serialize(d));
+        }
+
+        public static Draft Load()
+        {
+            try
+            {
+                if (!File.Exists(FilePath)) return null;
+                var d = new JavaScriptSerializer().Deserialize<Draft>(File.ReadAllText(FilePath, Encoding.UTF8));
+                return (d != null && d.Movie != null && !string.IsNullOrEmpty(d.Text)) ? d : null;
+            }
+            catch (Exception ex) { Program.Log("recovery file unreadable: " + ex.Message); return null; }
+        }
+
+        public static void Clear()
+        {
+            try { File.Delete(FilePath); } catch { }
         }
     }
 
@@ -369,7 +553,10 @@ namespace VlcCommentary
         readonly VlcClient vlc;
         readonly NotifyIcon tray;
         readonly HotkeyWindow hotkey;
+        readonly System.Windows.Forms.Timer draftTimer;
         NoteBox openBox;
+        Draft current;
+        bool draftDirty;
 
         public TrayApp(Config c)
         {
@@ -404,19 +591,38 @@ namespace VlcCommentary
                 Visible = true
             };
 
+            draftTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+            draftTimer.Tick += delegate { PersistDraft(); };
+
             hotkey = new HotkeyWindow();
             hotkey.Pressed += OnHotkey;
-            if (hotkey.Register(cfg.Hotkey))
-                Tip("VLC Commentary is running", "Press " + cfg.Hotkey + " while a movie plays to add a note.");
-            else
+            bool ok = hotkey.Register(cfg.Hotkey);
+
+            var pending = Recovery.Load();
+            if (!ok)
                 Tip("Hotkey " + cfg.Hotkey + " is unavailable",
                     "Another app uses it. Change 'hotkey=' in " + Config.FilePath + " and restart.");
+            else if (pending != null)
+                Tip("You have an unsaved note",
+                    pending.Movie.Name + " at " + NoteStore.Fmt(pending.Seconds) + ". Press " + cfg.Hotkey + " to finish it.");
+            else
+                Tip("VLC Commentary is running", "Press " + cfg.Hotkey + " while a movie plays to add a note.");
         }
 
         void OnHotkey()
         {
             Program.Log("hotkey pressed");
             if (openBox != null) { openBox.ShowAndFocus(); return; }
+
+            // A note left unfinished by a crash comes back first, still tied to its
+            // own movie and timestamp, whatever is playing now.
+            var pending = Recovery.Load();
+            if (pending != null)
+            {
+                Program.Log("reopening recovered note for " + pending.Movie.Name);
+                OpenBox(pending, true, false);
+                return;
+            }
 
             VlcStatus st;
             try { st = vlc.GetStatus(); }
@@ -431,36 +637,87 @@ namespace VlcCommentary
             }
             catch (Exception ex) { Tip("Couldn't read VLC", ex.Message); return; }
 
-            if (st.State == "stopped" || (st.FileName == null && st.Title == null))
+            if (!st.HasMedia)
             {
                 Tip("Nothing is playing in VLC", "Start a movie, then press " + cfg.Hotkey + ".");
                 return;
             }
+
+            var draft = new Draft { Movie = MovieRef.From(st), Seconds = st.Seconds };
+            Program.Log("note started: " + draft.Movie.Id + " at " + NoteStore.Fmt(draft.Seconds));
 
             bool pausedByUs = false;
             if (cfg.AutoPause && st.State == "playing")
             {
                 try { vlc.Pause(); pausedByUs = true; } catch { }
             }
+            OpenBox(draft, false, pausedByUs);
+        }
 
-            double seconds = st.Seconds;
-            openBox = new NoteBox(NoteStore.Fmt(seconds), NoteStore.MovieName(st));
+        void OpenBox(Draft draft, bool recovered, bool pausedByUs)
+        {
+            current = draft;
+            draftDirty = false;
+            openBox = new NoteBox(NoteStore.Fmt(draft.Seconds), draft.Movie.Name, draft.Text, draft.TypeIndex, recovered);
+            openBox.Changed += delegate(string text, int typeIndex)
+            {
+                current.Text = text;
+                current.TypeIndex = typeIndex;
+                draftDirty = true;
+            };
             openBox.Finished += delegate(string content, string type)
             {
+                draftTimer.Stop();
                 openBox = null;
-                Program.Log(content == null ? "note cancelled" : "note saved at " + NoteStore.Fmt(seconds));
-                if (content != null)
+                current = null;
+                if (content == null)
                 {
-                    try { NoteStore.Save(cfg, st, seconds, type, content); }
+                    Program.Log("note cancelled");
+                    Recovery.Clear();
+                }
+                else
+                {
+                    try
+                    {
+                        string file = NoteStore.Save(cfg, draft.Movie, draft.Seconds, type, content);
+                        Recovery.Clear();
+                        Program.Log("note saved at " + NoteStore.Fmt(draft.Seconds) + " to " + file);
+                    }
                     catch (Exception ex)
                     {
+                        // Keep the recovery copy so the note can be retried.
+                        try { draft.Text = content; Recovery.Save(draft); } catch { }
                         try { Clipboard.SetText(content); } catch { }
                         Tip("Note NOT saved (copied to clipboard)", ex.Message);
                     }
                 }
-                if (pausedByUs) { try { vlc.Resume(); } catch { } }
+                if (pausedByUs) ResumeIfSameMovie(draft.Movie);
             };
+            draftTimer.Start();
             openBox.ShowAndFocus();
+        }
+
+        void PersistDraft()
+        {
+            if (!draftDirty || current == null) return;
+            draftDirty = false;
+            try
+            {
+                if (current.Text.Trim().Length > 0) Recovery.Save(current);
+                else Recovery.Clear();
+            }
+            catch (Exception ex) { Program.Log("draft autosave failed: " + ex.Message); }
+        }
+
+        // If you switched movies while the box was open, don't start the new one.
+        void ResumeIfSameMovie(MovieRef movie)
+        {
+            try
+            {
+                var now = vlc.GetStatus();
+                if (now.HasMedia && MovieRef.From(now).Id == movie.Id) vlc.Resume();
+            }
+            catch { }
         }
 
         void Tip(string title, string text)
@@ -489,6 +746,7 @@ namespace VlcCommentary
 
         protected override void ExitThreadCore()
         {
+            PersistDraft();
             hotkey.Dispose();
             tray.Visible = false;
             tray.Dispose();
@@ -504,13 +762,14 @@ namespace VlcCommentary
         [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int val, int size);
 
         public event Action<string, string> Finished; // content is null when cancelled
+        public event Action<string, int> Changed;     // text or type edited
 
         readonly TextBox text;
         readonly Label footer;
         int typeIndex;
         bool done;
 
-        public NoteBox(string timestamp, string movie)
+        public NoteBox(string timestamp, string movie, string initialText, int initialType, bool recovered)
         {
             float k;
             using (var g = CreateGraphics()) k = g.DpiX / 96f;
@@ -523,6 +782,7 @@ namespace VlcCommentary
             Opacity = 0.94;
             Size = new Size((int)(470 * k), (int)(170 * k));
             Padding = new Padding((int)(14 * k), (int)(10 * k), (int)(14 * k), (int)(8 * k));
+            typeIndex = Math.Max(0, Math.Min(NoteStore.Types.Length - 1, initialType));
 
             var editorPanel = new Panel
             {
@@ -540,8 +800,10 @@ namespace VlcCommentary
                 BorderStyle = BorderStyle.None,
                 BackColor = Color.FromArgb(39, 39, 42),
                 ForeColor = Color.FromArgb(244, 244, 245),
-                Font = new Font("Segoe UI", 11f)
+                Font = new Font("Segoe UI", 11f),
+                Text = initialText ?? ""
             };
+            text.TextChanged += delegate { RaiseChanged(); };
             editorPanel.Controls.Add(text);
 
             var header = new Label
@@ -549,9 +811,9 @@ namespace VlcCommentary
                 Dock = DockStyle.Top,
                 Height = (int)(28 * k),
                 AutoEllipsis = true,
-                ForeColor = Color.FromArgb(255, 160, 60),
+                ForeColor = recovered ? Color.FromArgb(250, 204, 21) : Color.FromArgb(255, 160, 60),
                 Font = new Font("Segoe UI Semibold", 10f),
-                Text = "● " + timestamp + "    " + movie
+                Text = (recovered ? "RECOVERED  " : "\u25CF ") + timestamp + "    " + movie
             };
             footer = new Label
             {
@@ -585,6 +847,12 @@ namespace VlcCommentary
             SetForegroundWindow(Handle);
             Activate();
             text.Focus();
+            text.SelectionStart = text.Text.Length;
+        }
+
+        void RaiseChanged()
+        {
+            if (Changed != null) Changed(text.Text, typeIndex);
         }
 
         void UpdateFooter()
@@ -596,16 +864,12 @@ namespace VlcCommentary
         {
             if (keyData == Keys.Escape) { Finish(null); return true; }
             if (keyData == Keys.Enter) { Finish(text.Text); return true; }
-            if (keyData == Keys.Tab)
+            if (keyData == Keys.Tab || keyData == (Keys.Shift | Keys.Tab))
             {
-                typeIndex = (typeIndex + 1) % NoteStore.Types.Length;
+                int step = keyData == Keys.Tab ? 1 : NoteStore.Types.Length - 1;
+                typeIndex = (typeIndex + step) % NoteStore.Types.Length;
                 UpdateFooter();
-                return true;
-            }
-            if (keyData == (Keys.Shift | Keys.Tab))
-            {
-                typeIndex = (typeIndex + NoteStore.Types.Length - 1) % NoteStore.Types.Length;
-                UpdateFooter();
+                RaiseChanged();
                 return true;
             }
             return base.ProcessCmdKey(ref msg, keyData);
