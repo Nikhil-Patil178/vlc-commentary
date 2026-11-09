@@ -62,9 +62,27 @@ save shows a notice (red, in the corner), and your text is copied to the clipboa
 - Every note starts as a **draft**. A Draft/Publish status will separate research
   notes from final commentary in Write mode.
 
-Notes go to `Documents\VLC Commentary\`, one file per movie:
-- `<movie>.json`: the source of truth (timestamp, seconds, type, status, duration, content)
-- `<movie>.md`: a readable copy, regenerated on every save
+Notes go to `Documents\VLC Commentary\`, one folder per movie:
+
+```
+Documents\VLC Commentary\
+  Dhurandhar...\
+    Dhurandhar....json        notes: timestamp, type, status, duration, content
+    Dhurandhar....md          readable copy, regenerated on every save
+    Dhurandhar....eng.srt     subtitles extracted from inside the video
+    subtitles.txt             what was saved and from where
+```
+
+**Subtitles** are saved after the first note for a movie, once, in the background:
+- separate subtitle files next to the movie (`Movie.srt`, `Movie.en.srt`, and a
+  `Subs\` folder when the movie is alone in its folder) are copied
+- subtitle tracks inside the video (`.mkv`, `.mp4`) are extracted with
+  [FFmpeg](https://ffmpeg.org): `winget install Gyan.FFmpeg`. It reads the whole
+  file at idle priority, so playback isn't affected. DVD bitmap subtitles can't be
+  extracted on their own and are skipped.
+- delete `subtitles.txt` in a movie folder to make the app look again
+
+Notes from earlier versions, stored as loose files, are moved into folders automatically.
 
 Command-line mode, for scripts: `VlcCommentary.exe --note "text" [Type]`
 
@@ -99,6 +117,7 @@ port=8765               # must match VLC's http-port
 hotkey=Ctrl+Alt+N       # e.g. Ctrl+Shift+Space, Alt+F9
 autopause=false
 notes_dir=C:\Users\you\Documents\VLC Commentary
+ffmpeg=                 # optional path to ffmpeg.exe; found automatically otherwise
 ```
 
 ## Troubleshooting

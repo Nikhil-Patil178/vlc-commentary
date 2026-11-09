@@ -87,6 +87,7 @@ namespace VlcCommentary
         public int Port = 8765;
         public string Hotkey = "Ctrl+Alt+N";
         public bool AutoPause = false;
+        public string Ffmpeg = "";   // optional explicit path; found automatically otherwise
         public string NotesDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "VLC Commentary");
 
@@ -116,6 +117,7 @@ namespace VlcCommentary
                     case "hotkey": if (v.Length > 0) c.Hotkey = v; break;
                     case "autopause": c.AutoPause = v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
                     case "notes_dir": if (v.Length > 0) c.NotesDir = Environment.ExpandEnvironmentVariables(v); break;
+                    case "ffmpeg": c.Ffmpeg = Environment.ExpandEnvironmentVariables(v); break;
                 }
             }
             return c;
@@ -130,7 +132,8 @@ namespace VlcCommentary
                 "port=" + Port,
                 "hotkey=" + Hotkey,
                 "autopause=" + (AutoPause ? "true" : "false"),
-                "notes_dir=" + NotesDir
+                "notes_dir=" + NotesDir,
+                "ffmpeg=" + Ffmpeg
             });
         }
     }
@@ -370,8 +373,10 @@ namespace VlcCommentary
         public static string Save(Config cfg, MovieRef movie, double seconds, string type, string content, out int count)
         {
             Directory.CreateDirectory(cfg.NotesDir);
+            MigrateFlatFiles(cfg);
             var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
             string jsonPath = FindExisting(cfg.NotesDir, movie, ser) ?? NewFileName(cfg.NotesDir, movie);
+            Directory.CreateDirectory(Path.GetDirectoryName(jsonPath));
 
             Dictionary<string, object> doc = null;
             if (File.Exists(jsonPath))
@@ -422,7 +427,7 @@ namespace VlcCommentary
         static string FindExisting(string dir, MovieRef movie, JavaScriptSerializer ser)
         {
             string legacyMatch = null;
-            foreach (var f in Directory.GetFiles(dir, "*.json"))
+            foreach (var f in Directory.GetFiles(dir, "*.json", SearchOption.AllDirectories))
             {
                 try
                 {
@@ -440,13 +445,39 @@ namespace VlcCommentary
             return legacyMatch;
         }
 
+        // Each movie gets its own folder: <notes dir>\<Movie>\<Movie>.json
         static string NewFileName(string dir, MovieRef movie)
         {
             string baseName = SafeName(movie.Name);
             for (int i = 1; ; i++)
             {
-                string p = Path.Combine(dir, baseName + (i == 1 ? "" : " (" + i + ")") + ".json");
-                if (!File.Exists(p)) return p;
+                string name = baseName + (i == 1 ? "" : " (" + i + ")");
+                string folder = Path.Combine(dir, name);
+                if (!Directory.Exists(folder) && !File.Exists(Path.Combine(dir, name + ".json")))
+                    return Path.Combine(folder, name + ".json");
+            }
+        }
+
+        // Earlier versions kept <Movie>.json/.md loose in the notes folder.
+        // Move each pair into its own <Movie>\ folder.
+        public static void MigrateFlatFiles(Config cfg)
+        {
+            if (!Directory.Exists(cfg.NotesDir)) return;
+            foreach (var json in Directory.GetFiles(cfg.NotesDir, "*.json", SearchOption.TopDirectoryOnly))
+            {
+                try
+                {
+                    string name = Path.GetFileNameWithoutExtension(json);
+                    string folder = Path.Combine(cfg.NotesDir, name);
+                    string target = Path.Combine(folder, name + ".json");
+                    if (File.Exists(target)) { Program.Log("migrate: skipped " + name + " (folder already has notes)"); continue; }
+                    Directory.CreateDirectory(folder);
+                    File.Move(json, target);
+                    string md = Path.ChangeExtension(json, ".md");
+                    if (File.Exists(md)) File.Move(md, Path.Combine(folder, name + ".md"));
+                    Program.Log("migrate: moved " + name + " into its own folder");
+                }
+                catch (Exception ex) { Program.Log("migrate failed for " + json + ": " + ex.Message); }
             }
         }
 
@@ -486,6 +517,221 @@ namespace VlcCommentary
             foreach (char c in Path.GetInvalidFileNameChars()) s = s.Replace(c, '_');
             s = s.Trim().TrimEnd('.');
             return s.Length == 0 ? "Untitled" : s;
+        }
+    }
+
+    // ------------------------------------------------------------------ subtitles
+
+    // Saves the movie's subtitles into its notes folder, once per movie:
+    //  - separate files VLC would load (Movie.srt, Movie.en.srt, Subs\*.srt) are copied
+    //  - subtitle tracks inside the video file are extracted with FFmpeg
+    // Runs in the background at idle priority. A subtitles.txt in the folder records
+    // what was saved; delete it to make the app try again.
+    static class Subtitles
+    {
+        static readonly string[] SubExts = { ".srt", ".ass", ".ssa", ".vtt", ".sub", ".idx", ".sup", ".smi" };
+        static readonly string[] VideoExts = { ".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv", ".ts", ".webm", ".flv", ".mpg", ".mpeg" };
+        static readonly HashSet<string> running = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        public static void EnsureSaved(Config cfg, MovieRef movie, string folder)
+        {
+            if (movie.Location == null || !File.Exists(movie.Location)) return;
+            if (File.Exists(Path.Combine(folder, "subtitles.txt"))) return;
+            if (Directory.GetFiles(folder, "*.partial").Length > 0) return; // an extraction is already in progress
+            lock (running) { if (!running.Add(folder)) return; }
+            var t = new Thread(delegate()
+            {
+                try { Save(cfg, movie, folder); }
+                catch (Exception ex) { Program.Log("subtitles failed: " + ex.Message); }
+                finally { lock (running) running.Remove(folder); }
+            });
+            t.IsBackground = true;
+            t.Priority = ThreadPriority.Lowest;
+            t.Start();
+        }
+
+        // Synchronous; public so it can be run directly for testing.
+        public static void Save(Config cfg, MovieRef movie, string folder)
+        {
+            var report = new List<string>();
+            report.Add("Subtitles saved by VLC Commentary for: " + movie.Location);
+            report.Add("Delete this file to make the app look for subtitles again.");
+            report.Add("");
+
+            foreach (var src in FindSeparateFiles(movie.Location))
+            {
+                string dest = Path.Combine(folder, Path.GetFileName(src));
+                if (File.Exists(dest)) continue;
+                File.Copy(src, dest);
+                report.Add("copied   " + Path.GetFileName(dest) + "   <- " + src);
+            }
+
+            string ffmpeg = FindFfmpeg(cfg);
+            if (ffmpeg == null)
+                report.Add("FFmpeg not found, so subtitles inside the video file were not extracted.");
+            else
+                ExtractEmbedded(ffmpeg, movie, folder, report);
+
+            if (report.Count == 3) report.Add("No subtitles found for this movie.");
+            File.WriteAllLines(Path.Combine(folder, "subtitles.txt"), report.ToArray(), new UTF8Encoding(false));
+            Program.Log("subtitles done for " + movie.Name + ": " + (report.Count - 3) + " line(s) in subtitles.txt");
+        }
+
+        static List<string> FindSeparateFiles(string moviePath)
+        {
+            var found = new List<string>();
+            string dir = Path.GetDirectoryName(moviePath);
+            string stem = Path.GetFileNameWithoutExtension(moviePath);
+
+            foreach (var f in Directory.GetFiles(dir))
+                if (IsSub(f) && Path.GetFileName(f).StartsWith(stem, StringComparison.OrdinalIgnoreCase))
+                    found.Add(f);
+
+            // Subs\ or Subtitles\ folders belong to the movie only if it's alone in its folder
+            // (otherwise e.g. a drive full of downloads would pull in everyone's subtitles).
+            int videos = 0;
+            foreach (var f in Directory.GetFiles(dir))
+                if (Array.IndexOf(VideoExts, Path.GetExtension(f).ToLowerInvariant()) >= 0) videos++;
+            if (videos == 1)
+                foreach (var sub in new[] { "Subs", "Subtitles", "Sub" })
+                {
+                    string sd = Path.Combine(dir, sub);
+                    if (!Directory.Exists(sd)) continue;
+                    foreach (var f in Directory.GetFiles(sd, "*", SearchOption.AllDirectories))
+                        if (IsSub(f)) found.Add(f);
+                }
+            return found;
+        }
+
+        static bool IsSub(string f)
+        {
+            return Array.IndexOf(SubExts, Path.GetExtension(f).ToLowerInvariant()) >= 0;
+        }
+
+        // Which output format each FFmpeg subtitle codec can be saved as without re-encoding.
+        static bool FormatFor(string codec, out string ext, out string muxer, out string encoder)
+        {
+            ext = muxer = encoder = null;
+            switch (codec)
+            {
+                case "subrip": case "srt": ext = "srt"; muxer = "srt"; encoder = "copy"; return true;
+                case "mov_text": case "text": ext = "srt"; muxer = "srt"; encoder = "srt"; return true;
+                case "ass": case "ssa": ext = "ass"; muxer = "ass"; encoder = "copy"; return true;
+                case "webvtt": ext = "vtt"; muxer = "webvtt"; encoder = "copy"; return true;
+                case "hdmv_pgs_subtitle": ext = "sup"; muxer = "sup"; encoder = "copy"; return true;
+                default: return false; // e.g. DVD bitmap subtitles: FFmpeg can't write them to a file on their own
+            }
+        }
+
+        static void ExtractEmbedded(string ffmpeg, MovieRef movie, string folder, List<string> report)
+        {
+            // 1. List the subtitle tracks (reads only the file header).
+            string probe = Run(ffmpeg, "-hide_banner -nostdin -i " + Q(movie.Location), false);
+            var rx = new System.Text.RegularExpressions.Regex(
+                @"Stream #0:(\d+)(?:\[0x[0-9a-fA-F]+\])?(?:\(([^)]*)\))?: Subtitle: (\w+)");
+            var args = new StringBuilder("-hide_banner -nostdin -v error -y -i " + Q(movie.Location));
+            var outputs = new List<KeyValuePair<string, string>>(); // partial path, final path
+            var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string stem = SafeStem(movie.Name);
+
+            foreach (System.Text.RegularExpressions.Match m in rx.Matches(probe))
+            {
+                string index = m.Groups[1].Value, lang = m.Groups[2].Value, codec = m.Groups[3].Value;
+                string ext, muxer, encoder;
+                if (!FormatFor(codec, out ext, out muxer, out encoder))
+                {
+                    report.Add("skipped  track " + index + " (" + codec + "): this subtitle type can't be saved on its own");
+                    continue;
+                }
+                string label = lang.Length > 0 ? lang : "track" + index;
+                string name = stem + "." + label + "." + ext;
+                for (int n = 2; usedNames.Contains(name) || File.Exists(Path.Combine(folder, name)); n++)
+                    name = stem + "." + label + "." + n + "." + ext;
+                usedNames.Add(name);
+                string final = Path.Combine(folder, name);
+                string partial = final + ".partial";
+                args.Append(" -map 0:" + index + " -c:s " + encoder + " -f " + muxer + " " + Q(partial));
+                outputs.Add(new KeyValuePair<string, string>(partial, final));
+            }
+            if (outputs.Count == 0) return;
+
+            // 2. Extract every track in one pass (FFmpeg has to read the whole video once).
+            Program.Log("subtitles: extracting " + outputs.Count + " track(s) from " + movie.Location);
+            var watch = Stopwatch.StartNew();
+            string err = Run(ffmpeg, args.ToString(), true);
+            bool ok = LastExitCode == 0;
+            foreach (var o in outputs)
+            {
+                if (ok && File.Exists(o.Key) && new FileInfo(o.Key).Length > 0)
+                {
+                    File.Move(o.Key, o.Value);
+                    report.Add("extracted " + Path.GetFileName(o.Value) + "   (from inside the video file)");
+                }
+                else
+                {
+                    try { File.Delete(o.Key); } catch { }
+                }
+            }
+            if (!ok) report.Add("FFmpeg failed: " + err.Trim());
+            Program.Log("subtitles: FFmpeg finished in " + (int)watch.Elapsed.TotalSeconds + " s, exit " + LastExitCode);
+        }
+
+        [ThreadStatic] static int LastExitCode;
+
+        static string Run(string exe, string arguments, bool idle)
+        {
+            var psi = new ProcessStartInfo(exe, arguments)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true
+            };
+            using (var p = Process.Start(psi))
+            {
+                // Idle priority also lowers disk priority, so movie playback isn't disturbed.
+                if (idle) { try { p.PriorityClass = ProcessPriorityClass.Idle; } catch { } }
+                p.StandardOutput.ReadToEndAsync();
+                string err = p.StandardError.ReadToEnd();
+                p.WaitForExit();
+                LastExitCode = p.ExitCode;
+                return err;
+            }
+        }
+
+        static string Q(string s) { return "\"" + s + "\""; }
+
+        static string SafeStem(string s)
+        {
+            foreach (char c in Path.GetInvalidFileNameChars()) s = s.Replace(c, '_');
+            return s.Trim().TrimEnd('.');
+        }
+
+        public static string FindFfmpeg(Config cfg)
+        {
+            if (!string.IsNullOrEmpty(cfg.Ffmpeg) && File.Exists(cfg.Ffmpeg)) return cfg.Ffmpeg;
+            string path = (Environment.GetEnvironmentVariable("PATH") ?? "") + ";" +
+                          (Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.User) ?? "");
+            foreach (var d in path.Split(';'))
+            {
+                try
+                {
+                    if (d.Trim().Length == 0) continue;
+                    string p = Path.Combine(Environment.ExpandEnvironmentVariables(d.Trim()), "ffmpeg.exe");
+                    if (File.Exists(p)) return p;
+                }
+                catch { }
+            }
+            string winget = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                         "Microsoft", "WinGet");
+            string link = Path.Combine(winget, "Links", "ffmpeg.exe");
+            if (File.Exists(link)) return link;
+            string pkgs = Path.Combine(winget, "Packages");
+            if (Directory.Exists(pkgs))
+                foreach (var d in Directory.GetDirectories(pkgs, "*FFmpeg*"))
+                    foreach (var f in Directory.GetFiles(d, "ffmpeg.exe", SearchOption.AllDirectories))
+                        return f;
+            return null;
         }
     }
 
@@ -623,6 +869,8 @@ namespace VlcCommentary
             draftTimer = new System.Windows.Forms.Timer { Interval = 1500 };
             draftTimer.Tick += delegate { PersistDraft(); };
 
+            NoteStore.MigrateFlatFiles(cfg);
+
             hotkey = new HotkeyWindow();
             hotkey.Pressed += OnHotkey;
             bool ok = hotkey.Register(cfg.Hotkey);
@@ -713,6 +961,7 @@ namespace VlcCommentary
                         string file = NoteStore.Save(cfg, draft.Movie, draft.Seconds, type, content, out count);
                         Recovery.Clear();
                         Program.Log("note saved at " + NoteStore.Fmt(draft.Seconds) + " (" + count + " total) to " + file);
+                        Subtitles.EnsureSaved(cfg, draft.Movie, Path.GetDirectoryName(file));
                     }
                     catch (Exception ex)
                     {
