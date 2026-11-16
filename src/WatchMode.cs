@@ -88,6 +88,9 @@ namespace VlcCommentary
         public string Hotkey = "Ctrl+Alt+N";
         public bool AutoPause = false;
         public string Ffmpeg = "";   // optional explicit path; found automatically otherwise
+        public bool Phone = false;   // phone remote on your home Wi-Fi
+        public int PhonePort = 8780;
+        public string PhoneToken = ""; // secret part of the phone link, made on first use
         public string NotesDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "VLC Commentary");
 
@@ -118,6 +121,9 @@ namespace VlcCommentary
                     case "autopause": c.AutoPause = v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
                     case "notes_dir": if (v.Length > 0) c.NotesDir = Environment.ExpandEnvironmentVariables(v); break;
                     case "ffmpeg": c.Ffmpeg = Environment.ExpandEnvironmentVariables(v); break;
+                    case "phone": c.Phone = v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
+                    case "phone_port": if (int.TryParse(v, out n)) c.PhonePort = n; break;
+                    case "phone_token": c.PhoneToken = v; break;
                 }
             }
             return c;
@@ -133,7 +139,10 @@ namespace VlcCommentary
                 "hotkey=" + Hotkey,
                 "autopause=" + (AutoPause ? "true" : "false"),
                 "notes_dir=" + NotesDir,
-                "ffmpeg=" + Ffmpeg
+                "ffmpeg=" + Ffmpeg,
+                "phone=" + (Phone ? "true" : "false"),
+                "phone_port=" + PhonePort,
+                "phone_token=" + PhoneToken
             });
         }
     }
@@ -176,6 +185,7 @@ namespace VlcCommentary
     {
         public string State;     // playing | paused | stopped
         public double Seconds;   // current playback position
+        public double Length;    // movie length in seconds (0 if unknown)
         public string FileName;
         public string Title;
         public string Uri;       // full location of the current item, e.g. file:///C:/Movies/x.mkv
@@ -210,6 +220,7 @@ namespace VlcCommentary
             double time = Num(d, "time"), length = Num(d, "length"), pos = Num(d, "position");
             // "time" is whole seconds; position * length gives sub-second precision.
             s.Seconds = (length > 0 && pos > 0) ? pos * length : time;
+            s.Length = length;
             var meta = Dig(d, "information", "category", "meta");
             if (meta != null)
             {
@@ -224,6 +235,12 @@ namespace VlcCommentary
 
         public void Pause() { Request("/requests/status.json?command=pl_forcepause"); }
         public void Resume() { Request("/requests/status.json?command=pl_forceresume"); }
+        public void TogglePause() { Request("/requests/status.json?command=pl_pause"); }
+        // seconds > 0 jumps forward, < 0 jumps back.
+        public void SeekBy(int seconds)
+        {
+            Request("/requests/status.json?command=seek&val=" + (seconds >= 0 ? "%2B" : "-") + Math.Abs(seconds) + "s");
+        }
 
         static string FindCurrentUri(Dictionary<string, object> node)
         {
@@ -370,7 +387,15 @@ namespace VlcCommentary
             return result;
         }
 
+        // The phone and the keyboard can save at the same moment; one at a time.
+        static readonly object SaveLock = new object();
+
         public static string Save(Config cfg, MovieRef movie, double seconds, string type, string content, out int count)
+        {
+            lock (SaveLock) return SaveCore(cfg, movie, seconds, type, content, out count);
+        }
+
+        static string SaveCore(Config cfg, MovieRef movie, double seconds, string type, string content, out int count)
         {
             Directory.CreateDirectory(cfg.NotesDir);
             MigrateFlatFiles(cfg);
@@ -746,6 +771,7 @@ namespace VlcCommentary
         public double Seconds;
         public int TypeIndex;
         public string Text = "";
+        public bool Phone;   // started on the phone: kept even before any text, so the moment isn't lost
     }
 
     static class Recovery
@@ -764,7 +790,7 @@ namespace VlcCommentary
             {
                 if (!File.Exists(FilePath)) return null;
                 var d = new JavaScriptSerializer().Deserialize<Draft>(File.ReadAllText(FilePath, Encoding.UTF8));
-                return (d != null && d.Movie != null && !string.IsNullOrEmpty(d.Text)) ? d : null;
+                return (d != null && d.Movie != null && (!string.IsNullOrEmpty(d.Text) || d.Phone)) ? d : null;
             }
             catch (Exception ex) { Program.Log("recovery file unreadable: " + ex.Message); return null; }
         }
@@ -830,13 +856,20 @@ namespace VlcCommentary
         readonly HotkeyWindow hotkey;
         readonly System.Windows.Forms.Timer draftTimer;
         NoteBox openBox;
-        Draft current;
+        Draft current;       // the note being written, on the PC or on the phone
         bool draftDirty;
+        bool phoneOwns;      // current is being written on the phone
+        bool notePaused;     // we paused the movie for the current note
+        PhoneOverlay overlay;
+        readonly Control ui; // runs phone requests on this (the UI) thread
 
         public TrayApp(Config c)
         {
             cfg = c;
             vlc = new VlcClient(c);
+            ui = new Control();
+            ui.CreateControl();
+            var forceHandle = ui.Handle;
 
             var menu = new ContextMenuStrip();
             var autoPause = new ToolStripMenuItem("Pause the movie while I type")
@@ -850,6 +883,31 @@ namespace VlcCommentary
                 try { cfg.Save(); } catch { }
             };
             menu.Items.Add(autoPause);
+            menu.Items.Add(new ToolStripSeparator());
+            var phoneOn = new ToolStripMenuItem("Phone remote (same Wi-Fi)") { Checked = cfg.Phone };
+            var phoneLink = new ToolStripMenuItem("Connect a phone...") { Enabled = false };
+            phoneOn.Click += delegate
+            {
+                if (phone == null)
+                {
+                    if (!StartPhone(true)) return;
+                }
+                else
+                {
+                    phone.Dispose();
+                    phone = null;
+                    Program.Log("phone remote turned off");
+                }
+                cfg.Phone = phone != null;
+                try { cfg.Save(); } catch { }
+                phoneOn.Checked = cfg.Phone;
+                phoneLink.Enabled = cfg.Phone;
+            };
+            phoneLink.Click += delegate { if (phone != null) phone.OpenPairingPage(); };
+            menu.Items.Add(phoneOn);
+            menu.Items.Add(phoneLink);
+            menu.Opening += delegate { phoneLink.Enabled = phone != null; };
+            menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Open notes folder", null, delegate
             {
                 Directory.CreateDirectory(cfg.NotesDir);
@@ -884,12 +942,44 @@ namespace VlcCommentary
                     pending.Movie.Name + " at " + NoteStore.Fmt(pending.Seconds) + ". Press " + cfg.Hotkey + " to finish it.");
             else
                 Tip("VLC Commentary is running", "Press " + cfg.Hotkey + " while a movie plays to add a note.");
+
+            if (cfg.Phone && !StartPhone(false))
+                phoneOn.Checked = false;
+        }
+
+        PhoneRemote phone;
+
+        // showPairing: open the "scan this with your phone" page once it's running.
+        bool StartPhone(bool showPairing)
+        {
+            try
+            {
+                var p = new PhoneRemote(cfg, this);
+                p.Start();
+                phone = p;
+                if (showPairing) p.OpenPairingPage();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Program.Log("phone remote failed to start: " + ex.Message);
+                Tip("Phone remote couldn't start", ex.Message);
+                return false;
+            }
         }
 
         void OnHotkey()
         {
             Program.Log("hotkey pressed");
             if (openBox != null) { openBox.ShowAndFocus(); return; }
+
+            // Writing on the phone: carry on with the same note at the keyboard.
+            if (current != null && phoneOwns)
+            {
+                Program.Log("note moved from phone to keyboard");
+                OpenBox(current, false, notePaused);
+                return;
+            }
 
             // A note left unfinished by a crash comes back first, still tied to its
             // own movie and timestamp, whatever is playing now.
@@ -934,48 +1024,256 @@ namespace VlcCommentary
         void OpenBox(Draft draft, bool recovered, bool pausedByUs)
         {
             current = draft;
-            draftDirty = false;
+            notePaused = pausedByUs;
+            phoneOwns = false;
+            CloseOverlay();
+            draftDirty = true; // save straight away: it may have just come from the phone
             var saved = NoteStore.Load(cfg, draft.Movie);
-            openBox = new NoteBox(draft.Seconds, draft.Movie.Name, draft.Text, draft.TypeIndex, recovered, saved);
-            openBox.Changed += delegate(string text, int typeIndex)
+            var box = new NoteBox(draft.Seconds, draft.Movie.Name, draft.Text, draft.TypeIndex, recovered, saved);
+            openBox = box;
+            box.Changed += delegate(string text, int typeIndex)
             {
+                if (openBox != box) return;
                 current.Text = text;
                 current.TypeIndex = typeIndex;
                 draftDirty = true;
             };
-            openBox.Finished += delegate(string content, string type)
+            box.Finished += delegate(string content, string type)
             {
-                draftTimer.Stop();
+                if (openBox != box) return;
                 openBox = null;
-                current = null;
-                if (content == null)
-                {
-                    Program.Log("note cancelled");
-                    Recovery.Clear();
-                }
-                else
-                {
-                    try
-                    {
-                        int count;
-                        string file = NoteStore.Save(cfg, draft.Movie, draft.Seconds, type, content, out count);
-                        Recovery.Clear();
-                        Program.Log("note saved at " + NoteStore.Fmt(draft.Seconds) + " (" + count + " total) to " + file);
-                        Subtitles.EnsureSaved(cfg, draft.Movie, Path.GetDirectoryName(file));
-                    }
-                    catch (Exception ex)
-                    {
-                        // Keep the recovery copy so the note can be retried.
-                        try { draft.Text = content; Recovery.Save(draft); } catch { }
-                        try { Clipboard.SetText(content); } catch { }
-                        Program.Log("save failed: " + ex.Message);
-                        Toast.Pop("✗ NOT saved", "Copied to clipboard. " + ex.Message, false);
-                    }
-                }
-                if (pausedByUs) ResumeIfSameMovie(draft.Movie);
+                int count;
+                EndNote(content, type, false, out count);
             };
             draftTimer.Start();
-            openBox.ShowAndFocus();
+            box.ShowAndFocus();
+        }
+
+        // Ends the current note: saves it (content != null) or throws it away.
+        // Returns null if that worked, or why saving failed; a failed note is kept,
+        // on disk and (from the phone) still open, so it can be retried.
+        string EndNote(string content, string type, bool fromPhone, out int count)
+        {
+            count = 0;
+            var draft = current;
+            bool resume = notePaused;
+            draftTimer.Stop();
+            current = null;
+            phoneOwns = false;
+            notePaused = false;
+            CloseOverlay();
+            if (draft == null) return null;
+            lastEndedSeconds = draft.Seconds;
+            lastEndedAt = DateTime.UtcNow;
+
+            if (content == null)
+            {
+                Program.Log("note cancelled");
+                Recovery.Clear();
+            }
+            else
+            {
+                try
+                {
+                    string file = NoteStore.Save(cfg, draft.Movie, draft.Seconds, type, content, out count);
+                    Recovery.Clear();
+                    Program.Log((fromPhone ? "phone: " : "") + "note saved at " + NoteStore.Fmt(draft.Seconds) +
+                                " (" + count + " total) to " + file);
+                    Subtitles.EnsureSaved(cfg, draft.Movie, Path.GetDirectoryName(file));
+                    if (fromPhone) Toast.Pop("✓ Saved from phone", NoteStore.Fmt(draft.Seconds) + "  ·  " + type, true);
+                }
+                catch (Exception ex)
+                {
+                    // Keep the recovery copy so the note can be retried.
+                    draft.Text = content;
+                    draft.TypeIndex = Math.Max(0, Array.IndexOf(NoteStore.Types, type));
+                    try { Recovery.Save(draft); } catch { }
+                    Program.Log("save failed: " + ex.Message);
+                    if (fromPhone)
+                    {
+                        current = draft;
+                        phoneOwns = true;
+                        notePaused = resume;
+                        draftTimer.Start();
+                        ShowOverlay();
+                        return ex.Message;
+                    }
+                    try { Clipboard.SetText(content); } catch { }
+                    Toast.Pop("✗ NOT saved", "Copied to clipboard. " + ex.Message, false);
+                    return ex.Message;
+                }
+            }
+            if (resume) ResumeIfSameMovie(draft.Movie);
+            return null;
+        }
+
+        // ------------------------------------------------ phone side (see PhoneRemote)
+        // PhoneRemote calls these from its network threads; RunOnUi moves each call
+        // onto this thread, so the phone and the keyboard never edit a note at once.
+
+        public T RunOnUi<T>(Func<T> f)
+        {
+            return (T)ui.Invoke(f);
+        }
+
+        // What the phone should show about the note in progress (null: none).
+        public Dictionary<string, object> PhoneNoteState()
+        {
+            string owner;
+            Draft d = current;
+            if (d != null) owner = phoneOwns ? "phone" : "pc";
+            else
+            {
+                d = Recovery.Load();
+                if (d == null) return null;
+                owner = "recovered";
+            }
+            var o = new Dictionary<string, object>();
+            o["owner"] = owner;
+            o["seconds"] = Math.Round(d.Seconds, 2);
+            o["timestamp"] = NoteStore.Fmt(d.Seconds);
+            o["movie"] = d.Movie.Name;
+            o["type"] = NoteStore.Types[Math.Max(0, Math.Min(NoteStore.Types.Length - 1, d.TypeIndex))];
+            o["text"] = d.Text ?? "";
+            return o;
+        }
+
+        // The phone tapped a note type. Continues the note in progress (taking it
+        // over from the keyboard, or one left unsaved by a crash) or starts one at
+        // the movie's current moment. Returns null and sets error if there's nothing to do.
+        public Dictionary<string, object> PhoneStart(VlcStatus st, MovieRef movie, int typeIndex, out string error)
+        {
+            error = null;
+            if (current != null && phoneOwns) return PhoneNoteState();
+
+            if (openBox != null)
+            {
+                Program.Log("note moved from keyboard to phone");
+                var box = openBox;
+                openBox = null;
+                box.Detach();
+                phoneOwns = true;
+                draftDirty = true;
+                ShowOverlay();
+                return PhoneNoteState();
+            }
+
+            var pending = Recovery.Load();
+            if (pending != null)
+            {
+                Program.Log("phone: continuing recovered note for " + pending.Movie.Name);
+                current = pending;
+                phoneOwns = true;
+                notePaused = false;
+                draftDirty = false;
+                draftTimer.Start();
+                ShowOverlay();
+                return PhoneNoteState();
+            }
+
+            if (st == null || movie == null || !st.HasMedia)
+            {
+                error = st == null ? "Can't reach VLC. Open VLC on the PC." : "Nothing is playing in VLC.";
+                return null;
+            }
+            current = new Draft
+            {
+                Movie = movie,
+                Seconds = st.Seconds,
+                TypeIndex = Math.Max(0, Math.Min(NoteStore.Types.Length - 1, typeIndex)),
+                Phone = true
+            };
+            phoneOwns = true;
+            notePaused = false;
+            draftDirty = true; // on disk within a second or two, even before any text
+            Program.Log("phone: note started " + movie.Id + " at " + NoteStore.Fmt(st.Seconds));
+            if (cfg.AutoPause && st.State == "playing")
+            {
+                try { vlc.Pause(); notePaused = true; } catch { }
+            }
+            draftTimer.Start();
+            ShowOverlay();
+            return PhoneNoteState();
+        }
+
+        public const int PhoneOk = 0, PhoneMoved = 1, PhoneNoNote = 2;
+
+        // Where a phone's note stands: PhoneOk (it's on the phone), PhoneMoved (on the
+        // keyboard now) or PhoneNoNote (the PC lost it, e.g. it restarted before the
+        // note reached the disk; the phone then sends it back with PhoneAdopt).
+        int PhoneOwner()
+        {
+            if (current == null) return PhoneNoNote;
+            return phoneOwns ? PhoneOk : PhoneMoved;
+        }
+
+        // A note the phone still has (with its original moment) but the PC doesn't.
+        // False if it's the note that was just saved or cancelled (a late message
+        // from the phone must not bring it back).
+        public bool PhoneAdopt(Draft d)
+        {
+            if (current != null || d == null) return false;
+            if (Math.Abs(d.Seconds - lastEndedSeconds) < 0.05 && DateTime.UtcNow - lastEndedAt < TimeSpan.FromMinutes(2))
+                return false;
+            Program.Log("phone: restored note at " + NoteStore.Fmt(d.Seconds) + " for " + d.Movie.Name);
+            current = d;
+            phoneOwns = true;
+            notePaused = false;
+            draftDirty = true;
+            draftTimer.Start();
+            ShowOverlay();
+            return true;
+        }
+
+        double lastEndedSeconds = -1;
+        DateTime lastEndedAt;
+
+        // Live text from the phone.
+        public int PhoneUpdate(string text, int typeIndex)
+        {
+            int owner = PhoneOwner();
+            if (owner != PhoneOk) return owner;
+            current.Text = text ?? "";
+            if (typeIndex >= 0 && typeIndex < NoteStore.Types.Length) current.TypeIndex = typeIndex;
+            draftDirty = true;
+            if (overlay != null) overlay.Display(current);
+            return PhoneOk;
+        }
+
+        // Returns null if saved, otherwise why not (owner says if it moved or is unknown).
+        public string PhoneSave(string text, int typeIndex, out int owner, out string timestamp, out int count)
+        {
+            timestamp = null;
+            count = 0;
+            owner = PhoneOwner();
+            if (owner == PhoneMoved) return "This note was moved to the PC.";
+            if (owner == PhoneNoNote) return "The PC has no note in progress.";
+            current.Text = text ?? "";
+            if (typeIndex >= 0 && typeIndex < NoteStore.Types.Length) current.TypeIndex = typeIndex;
+            timestamp = NoteStore.Fmt(current.Seconds);
+            string content = current.Text.Trim();
+            if (content.Length == 0) content = "(quick mark)";
+            return EndNote(content, NoteStore.Types[current.TypeIndex], true, out count);
+        }
+
+        public void PhoneCancel()
+        {
+            if (current == null || !phoneOwns) return;
+            int count;
+            EndNote(null, null, true, out count);
+        }
+
+        void ShowOverlay()
+        {
+            if (overlay == null) overlay = new PhoneOverlay(cfg.Hotkey);
+            overlay.Display(current);
+        }
+
+        void CloseOverlay()
+        {
+            if (overlay == null) return;
+            overlay.Close();
+            overlay = null;
         }
 
         void PersistDraft()
@@ -984,7 +1282,7 @@ namespace VlcCommentary
             draftDirty = false;
             try
             {
-                if (current.Text.Trim().Length > 0) Recovery.Save(current);
+                if (current.Text.Trim().Length > 0 || current.Phone) Recovery.Save(current);
                 else Recovery.Clear();
             }
             catch (Exception ex) { Program.Log("draft autosave failed: " + ex.Message); }
@@ -1028,6 +1326,8 @@ namespace VlcCommentary
         protected override void ExitThreadCore()
         {
             PersistDraft();
+            if (phone != null) phone.Dispose();
+            CloseOverlay();
             hotkey.Dispose();
             tray.Visible = false;
             tray.Dispose();
@@ -1338,6 +1638,108 @@ namespace VlcCommentary
             }
             if (Finished != null) Finished(content, NoteStore.Types[typeIndex]);
             BeginInvoke(new Action(Close));
+        }
+
+        // The note moved to the phone: close without saving or cancelling it.
+        public void Detach()
+        {
+            done = true;
+            Close();
+        }
+    }
+
+    // ------------------------------------------------------------------ "writing on your phone" overlay
+
+    // Shows, in the corner of the PC screen, the note you're writing on the phone,
+    // as you type it. Never takes focus, so VLC stays fullscreen and in control.
+    class PhoneOverlay : Form
+    {
+        [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int val, int size);
+
+        readonly Label header, body, footer;
+        readonly float k;
+
+        protected override bool ShowWithoutActivation { get { return true; } }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var cp = base.CreateParams;
+                cp.ExStyle |= 0x08000000 /* NOACTIVATE */ | 0x80 /* TOOLWINDOW */ | 0x8 /* TOPMOST */ | 0x20 /* click-through */;
+                return cp;
+            }
+        }
+
+        public PhoneOverlay(string hotkey)
+        {
+            using (var g = CreateGraphics()) k = g.DpiX / 96f;
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            TopMost = true;
+            StartPosition = FormStartPosition.Manual;
+            BackColor = Color.FromArgb(24, 24, 27);
+            Opacity = 0.92;
+            Width = (int)(470 * k);
+            Padding = new Padding((int)(14 * k), (int)(10 * k), (int)(14 * k), (int)(8 * k));
+
+            header = new Label
+            {
+                Dock = DockStyle.Top,
+                Height = (int)(28 * k),
+                AutoEllipsis = true,
+                ForeColor = Color.FromArgb(255, 160, 60),
+                Font = new Font("Segoe UI Semibold", 10f)
+            };
+            body = new Label
+            {
+                Dock = DockStyle.Fill,
+                Font = new Font("Segoe UI", 11f),
+                ForeColor = Color.FromArgb(244, 244, 245)
+            };
+            footer = new Label
+            {
+                Dock = DockStyle.Bottom,
+                Height = (int)(24 * k),
+                TextAlign = ContentAlignment.BottomLeft,
+                ForeColor = Color.FromArgb(161, 161, 170),
+                Font = new Font("Segoe UI", 8.5f),
+                Text = "Writing on your phone    " + hotkey + ": continue on the keyboard"
+            };
+            Controls.Add(body);
+            Controls.Add(header);
+            Controls.Add(footer);
+        }
+
+        public void Display(Draft d)
+        {
+            if (d == null) return;
+            string type = NoteStore.Types[Math.Max(0, Math.Min(NoteStore.Types.Length - 1, d.TypeIndex))];
+            header.Text = "● " + NoteStore.Fmt(d.Seconds) + "  " + type + "    " + d.Movie.Name;
+            string text = (d.Text ?? "").Trim();
+            body.ForeColor = text.Length > 0 ? Color.FromArgb(244, 244, 245) : Color.FromArgb(113, 113, 122);
+            if (text.Length == 0) text = "Typing on your phone…";
+            if (text.Length > 600) text = "…" + text.Substring(text.Length - 600); // newest words stay visible
+
+            // Grow with the text, up to about eight lines.
+            int inner = Width - Padding.Horizontal;
+            int h = TextRenderer.MeasureText(text, body.Font, new Size(inner, int.MaxValue),
+                                             TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl).Height;
+            h = Math.Max((int)(26 * k), Math.Min(h, (int)(170 * k)));
+            body.Text = text;
+            Height = Padding.Vertical + header.Height + footer.Height + h + (int)(4 * k);
+
+            var screen = Screen.PrimaryScreen.Bounds;
+            foreach (var s in Screen.AllScreens)
+                if (s.Bounds.Contains(Cursor.Position)) screen = s.Bounds;
+            Location = new Point(screen.Right - Width - (int)(32 * k), screen.Top + (int)(32 * k));
+            if (!Visible) Show();
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            try { int round = 2; DwmSetWindowAttribute(Handle, 33, ref round, 4); } catch { }
         }
     }
 }

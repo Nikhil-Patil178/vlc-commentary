@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0c0c0e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Commentary">
+<title>VLC Commentary</title>
+<style>
+  :root {
+    --bg: #0c0c0e;
+    --panel: #18181b;
+    --panel-2: #222226;
+    --line: #2e2e33;
+    --text: #f4f4f5;
+    --muted: #a1a1aa;
+    --faint: #71717a;
+    --accent: #ff8800;
+    --ok: #4ade80;
+    --bad: #f87171;
+    --obs: #60a5fa;
+    --int: #c084fc;
+    --emo: #f472b6;
+    --que: #facc15;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    min-height: 100dvh;
+    padding: max(14px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom));
+    max-width: 560px;
+    margin: 0 auto;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  button { font: inherit; color: inherit; border: 0; cursor: pointer; touch-action: manipulation; }
+  button:active { transform: scale(0.97); }
+  button:disabled { opacity: 0.35; }
+
+  .top { display: flex; align-items: center; gap: 10px; min-height: 24px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
+  .dot.live { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.paused { background: var(--accent); }
+  .movie { font-size: 15px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .clock { margin: 18px 0 8px; text-align: center; }
+  .clock .t { font-size: 54px; font-weight: 600; letter-spacing: 1px; font-variant-numeric: tabular-nums; }
+  .clock .len { color: var(--faint); font-size: 14px; font-variant-numeric: tabular-nums; }
+  .bar { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; margin: 10px 0 0; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .9s linear; }
+
+  .banner { display: none; margin: 14px 0 0; padding: 12px 14px; border-radius: 12px; background: #3b1d1d; color: #fecaca; font-size: 15px; }
+  .banner.show { display: block; }
+
+  .transport { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.4fr) minmax(0,1fr); gap: 12px; margin: 22px 0 22px; }
+  .transport button { background: var(--panel); border-radius: 18px; height: 76px; font-size: 18px; font-weight: 600; }
+  .transport .play { background: var(--accent); color: #111; font-size: 30px; }
+  .transport small { display: block; font-size: 12px; font-weight: 500; color: var(--muted); }
+  .transport .play small { color: #3a2200; }
+
+  .label { color: var(--faint); font-size: 13px; text-transform: uppercase; letter-spacing: .08em; margin: 0 0 10px; }
+  .types { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; }
+  .types button {
+    background: var(--panel); border-radius: 18px; min-height: 92px; padding: 14px; text-align: left;
+    border-left: 5px solid var(--c); display: flex; flex-direction: column; justify-content: space-between;
+  }
+  .types b { font-size: 18px; overflow-wrap: anywhere; }
+  .types span { font-size: 13px; color: var(--muted); }
+
+  .recent { margin: 26px 0 0; }
+  .note { padding: 12px 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: 74px 1fr; gap: 10px; }
+  .note .ts { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 14px; }
+  .note .ty { font-size: 12px; font-weight: 600; color: var(--c); }
+  .note .tx { font-size: 15px; word-break: break-word; white-space: pre-wrap; }
+  .empty { color: var(--faint); font-size: 14px; padding: 12px 0; border-top: 1px solid var(--line); }
+
+  /* compose sheet */
+  .sheet {
+    position: fixed; inset: 0; background: var(--bg); z-index: 5; display: none; flex-direction: column;
+    padding: max(14px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+    max-width: 560px; margin: 0 auto;
+  }
+  .sheet.open { display: flex; }
+  .sheet .head { display: flex; align-items: baseline; gap: 10px; }
+  .sheet .when { font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--accent); }
+  .sheet .of { color: var(--muted); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+  .chips button {
+    background: var(--panel); border-radius: 999px; padding: 10px 14px; font-size: 15px; white-space: nowrap;
+    border: 2px solid transparent;
+  }
+  .chips button.on { border-color: var(--c); color: var(--c); background: var(--panel-2); }
+  textarea {
+    flex: 1; min-height: 120px; width: 100%; resize: none; background: var(--panel); color: var(--text);
+    border: 1px solid var(--line); border-radius: 16px; padding: 14px; font: 18px/1.45 inherit; font-family: inherit;
+    -webkit-user-select: text; user-select: text;
+  }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: 0; border-color: transparent; }
+  .hint { color: var(--faint); font-size: 13px; margin: 8px 2px 0; }
+  .actions { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,2fr); gap: 12px; margin-top: 12px; }
+  .actions button { height: 62px; border-radius: 16px; font-size: 18px; font-weight: 600; }
+  .actions .cancel { background: var(--panel); color: var(--muted); }
+  .actions .save { background: var(--accent); color: #111; }
+  .sheet .mini { display: flex; gap: 10px; margin-top: 12px; }
+  .sheet .mini button { flex: 1; height: 46px; border-radius: 14px; background: var(--panel); font-size: 15px; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: max(24px, env(safe-area-inset-bottom)); transform: translateX(-50%) translateY(20px);
+    background: #14532d; color: #dcfce7; padding: 12px 18px; border-radius: 999px; font-weight: 600; font-size: 15px;
+    opacity: 0; transition: .2s; pointer-events: none; z-index: 10; white-space: nowrap;
+  }
+  .toast.bad { background: #7f1d1d; color: #fee2e2; }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* a note in progress on the keyboard, or left unsaved */
+  .elsewhere { display: none; margin: 16px 0 0; padding: 14px; border-radius: 16px; background: var(--panel); border: 1px solid #5a3500; }
+  .elsewhere.show { display: block; }
+  .ew-title { color: var(--accent); font-weight: 600; font-size: 15px; }
+  .ew-text { color: var(--muted); font-size: 14px; margin: 6px 0 12px; white-space: pre-wrap; word-break: break-word; max-height: 4.2em; overflow: hidden; }
+  .ew-text:empty { display: none; }
+  .elsewhere button { width: 100%; height: 52px; border-radius: 14px; background: var(--accent); color: #111; font-weight: 600; font-size: 17px; }
+</style>
+</head>
+<body>
+  <div class="top"><div class="dot" id="dot"></div><div class="movie" id="movie">Connecting to your PC…</div></div>
+
+  <div class="clock">
+    <div class="t" id="time">--:--:--</div>
+    <div class="len" id="len">&nbsp;</div>
+    <div class="bar"><i id="bar"></i></div>
+  </div>
+  <div class="banner" id="banner"></div>
+  <div class="elsewhere" id="elsewhere">
+    <div class="ew-title" id="ewTitle"></div>
+    <div class="ew-text" id="ewText"></div>
+    <button id="ewBtn">Continue on phone</button>
+  </div>
+
+  <div class="transport">
+    <button id="back" aria-label="Back 10 seconds">−10<small>seconds</small></button>
+    <button id="play" class="play" aria-label="Play or pause">▶︎<small>play</small></button>
+    <button id="fwd" aria-label="Forward 10 seconds">+10<small>seconds</small></button>
+  </div>
+
+  <p class="label">Tap to note this moment</p>
+  <div class="types" id="types"></div>
+
+  <div class="recent">
+    <p class="label">Your notes on this film</p>
+    <div id="notes"><div class="empty">No notes yet.</div></div>
+  </div>
+
+  <div class="sheet" id="sheet" role="dialog" aria-label="New note">
+    <div class="head"><div class="when" id="when">00:00:00</div><div class="of" id="of"></div></div>
+    <div class="chips" id="chips"></div>
+    <textarea id="text" placeholder="What did you notice? (Use your keyboard's microphone to speak it.)"></textarea>
+    <p class="hint" id="hint">Leave it empty to save just a quick mark.</p>
+    <div class="mini">
+      <button id="sBack">−10s</button>
+      <button id="sPlay">Play / pause</button>
+      <button id="sFwd">+10s</button>
+    </div>
+    <div class="actions">
+      <button class="cancel" id="cancel">Cancel</button>
+      <button class="save" id="save">Save mark</button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  var TYPES = [
+    { name: "Observation", hint: "what I see", c: "var(--obs)" },
+    { name: "Interpretation", hint: "what it means", c: "var(--int)" },
+    { name: "Emotion", hint: "what I feel", c: "var(--emo)" },
+    { name: "Question", hint: "look into it", c: "var(--que)" }
+  ];
+  var DRAFT_KEY = "vlc-commentary-draft";
+  var $ = function (id) { return document.getElementById(id); };
+  var state = { type: 0, open: false, openedAt: 0, busy: false, lastMovie: null };
+
+  function colorOf(name) {
+    for (var i = 0; i < TYPES.length; i++) if (TYPES[i].name === name) return TYPES[i].c;
+    return "var(--muted)";
+  }
+  function buzz(ms) { try { if (navigator.vibrate) navigator.vibrate(ms || 20); } catch (e) {} }
+
+  function api(path, body) {
+    var opts = body === undefined ? { cache: "no-store" }
+      : { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+    return fetch("api/" + path, opts).then(function (r) {
+      return r.json().catch(function () { return { ok: false, error: "Unexpected reply from the PC." }; })
+        .then(function (j) { j._status = r.status; return j; });
+    });
+  }
+
+  var toastTimer;
+  function toast(msg, bad) {
+    var t = $("toast");
+    t.textContent = msg;
+    t.className = "toast show" + (bad ? " bad" : "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = "toast" + (bad ? " bad" : ""); }, bad ? 4000 : 1800);
+  }
+
+  // ---------- the note's text is kept on the phone (survives a refresh or lock
+  // screen) and sent live to the PC (shown on screen there, and saved to its disk
+  // so a power cut or crash doesn't lose it).
+  // The phone also remembers the note's exact moment and film, so even if the PC
+  // loses the note (it restarted before the note reached its disk), the phone can
+  // hand it back.
+  function saveLocal() {
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({
+        text: $("text").value, type: state.type, when: $("when").textContent,
+        seconds: state.seconds, movie: state.movieName
+      }));
+    } catch (e) {}
+  }
+  function loadLocal() { try { return JSON.parse(localStorage.getItem(DRAFT_KEY) || "null"); } catch (e) { return null; } }
+  function clearLocal() { try { localStorage.removeItem(DRAFT_KEY); } catch (e) {} }
+  function secondsOf(when) { // "01:12:43" -> 4363 (for drafts saved before seconds were kept)
+    var p = String(when || "").split(":");
+    return p.length === 3 ? (+p[0]) * 3600 + (+p[1]) * 60 + (+p[2]) : null;
+  }
+  function body(extra) {
+    var b = { text: $("text").value, type: TYPES[state.type].name, seconds: state.seconds, movie: state.movieName };
+    for (var k in extra || {}) b[k] = extra[k];
+    return b;
+  }
+
+  var sendTimer = null, sending = null, sendAgain = false, warned = false;
+  function sendDraft() {
+    if (!state.open) return;
+    if (sending) { sendAgain = true; return; } // one request at a time; the newest text wins
+    sending = api("draft", body()).then(function (r) {
+      sending = null;
+      if (r.moved) { movedAway(); return; }
+      if (r.error && !warned) { warned = true; toast(r.error, true); }
+      if (sendAgain) { sendAgain = false; sendDraft(); }
+    }).catch(function () { sending = null; });
+  }
+  function scheduleSend() { clearTimeout(sendTimer); sendTimer = setTimeout(sendDraft, 250); }
+  // Save and Cancel wait for any update still on its way, so it can't arrive after them.
+  function settled() {
+    clearTimeout(sendTimer);
+    sendAgain = false;
+    return sending ? sending.then(function () {}, function () {}) : Promise.resolve();
+  }
+
+  function typeIndex(name) {
+    for (var i = 0; i < TYPES.length; i++) if (TYPES[i].name === name) return i;
+    return 0;
+  }
+
+  // ---------- build buttons
+  TYPES.forEach(function (t, i) {
+    var b = document.createElement("button");
+    b.style.setProperty("--c", t.c);
+    b.innerHTML = "<b></b><span></span>";
+    b.firstChild.textContent = t.name;
+    b.lastChild.textContent = t.hint;
+    b.onclick = function () { startNote(i); };
+    $("types").appendChild(b);
+
+    var c = document.createElement("button");
+    c.style.setProperty("--c", t.c);
+    c.textContent = t.name;
+    c.onclick = function () { state.type = i; paintChips(); saveLocal(); sendDraft(); buzz(10); };
+    $("chips").appendChild(c);
+  });
+
+  function paintChips() {
+    var kids = $("chips").children;
+    for (var i = 0; i < kids.length; i++) kids[i].className = i === state.type ? "on" : "";
+  }
+  function paintSave() {
+    var has = $("text").value.trim().length > 0;
+    $("save").textContent = has ? "Save note" : "Save mark";
+    $("hint").textContent = has ? "Saved at " + $("when").textContent + ", not when you finish typing."
+                                : "Leave it empty to save just a quick mark.";
+  }
+
+  // ---------- note flow
+  // note: { timestamp, seconds, movie, type, text } from the PC (or kept on this phone).
+  function openSheet(note) {
+    var local = loadLocal();
+    var text = note.text || "", type = typeIndex(note.type);
+    // Text typed on this phone that the PC may not have received yet wins.
+    var newer = local && local.when === note.timestamp && local.text && local.text !== text;
+    if (newer) { text = local.text; type = local.type || 0; }
+    state.open = true;
+    state.openedAt = Date.now();
+    state.type = type;
+    state.seconds = typeof note.seconds === "number" ? note.seconds : secondsOf(note.timestamp);
+    state.movieName = note.movie || "";
+    warned = false;
+    $("when").textContent = note.timestamp;
+    $("of").textContent = note.movie || "";
+    $("text").value = text;
+    paintChips();
+    paintSave();
+    saveLocal();
+    if (newer || note.local) sendDraft();
+    $("elsewhere").className = "elsewhere";
+    $("sheet").className = "sheet open";
+    setTimeout(function () { $("text").focus(); }, 50);
+  }
+  function closeSheet() {
+    state.open = false;
+    clearTimeout(sendTimer);
+    $("sheet").className = "sheet";
+    $("text").blur();
+    clearLocal();
+  }
+  function movedAway() {
+    if (!state.open) return;
+    closeSheet();
+    toast("Moved to your PC keyboard");
+  }
+
+  // i: the type tapped, or -1 to carry on with the note in progress as it is.
+  function startNote(i) {
+    if (state.busy) return;
+    state.busy = true;
+    buzz(25);
+    api("mark", i >= 0 ? { type: TYPES[i].name } : {}).then(function (r) {
+      state.busy = false;
+      if (!r.ok) { toast(r.error || "Couldn't mark this moment.", true); return; }
+      openSheet(r);
+    }).catch(function () { state.busy = false; toast("Can't reach your PC.", true); });
+  }
+  $("ewBtn").onclick = function () {
+    if (state.ewLocal) { var l = loadLocal(); if (l) { openSheet(localNote(l)); return; } }
+    startNote(-1);
+  };
+  function localNote(l) {
+    return { timestamp: l.when, seconds: typeof l.seconds === "number" ? l.seconds : secondsOf(l.when),
+             movie: l.movie || "", type: TYPES[l.type || 0].name, text: l.text, local: true };
+  }
+
+  $("text").addEventListener("input", function () { paintSave(); saveLocal(); scheduleSend(); });
+
+  $("save").onclick = function () {
+    if (state.busy) return;
+    state.busy = true;
+    $("save").disabled = true;
+    settled().then(function () { return api("note", body()); }).then(function (r) {
+      state.busy = false;
+      $("save").disabled = false;
+      if (r.moved) { movedAway(); return; }
+      if (!r.ok) { toast(r.error || "Not saved. Try again.", true); return; } // sheet stays open, text kept
+      buzz([20, 40, 20]);
+      closeSheet();
+      toast("Saved at " + r.timestamp);
+      loadNotes();
+    }).catch(function () {
+      state.busy = false;
+      $("save").disabled = false;
+      toast("Not saved: can't reach your PC. Your text is kept.", true);
+    });
+  };
+
+  $("cancel").onclick = function () {
+    if ($("text").value.trim().length > 0 && !confirm("Throw away this note?")) return;
+    state.busy = true;
+    closeSheet();
+    settled().then(function () { return api("cancel", {}); })
+      .then(function () { state.busy = false; }, function () { state.busy = false; });
+  };
+
+  // ---------- transport
+  function after(t0) { return function (s) { paint(s, t0); }; }
+  function toggle() { buzz(15); api("toggle", {}).then(after(Date.now())).catch(function () { toast("Can't reach your PC.", true); }); }
+  function seek(by) { buzz(10); api("seek", { by: by }).then(after(Date.now())).catch(function () { toast("Can't reach your PC.", true); }); }
+  $("play").onclick = toggle; $("sPlay").onclick = toggle;
+  $("back").onclick = function () { seek(-10); }; $("sBack").onclick = function () { seek(-10); };
+  $("fwd").onclick = function () { seek(10); }; $("sFwd").onclick = function () { seek(10); };
+
+  // ---------- status
+  function fmt(s) {
+    s = Math.max(0, Math.floor(s || 0));
+    var h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = s % 60;
+    return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m + ":" + (x < 10 ? "0" : "") + x;
+  }
+
+  function banner(msg) {
+    $("banner").textContent = msg || "";
+    $("banner").className = msg ? "banner show" : "banner";
+  }
+
+  // The note in progress, wherever it is: on this phone, at the PC keyboard,
+  // or left unsaved by a crash or power cut. t0: when the request was sent;
+  // replies to requests sent before the sheet opened are out of date.
+  function paintNote(n, t0) {
+    var fresh = !t0 || t0 >= state.openedAt;
+    if (n && n.owner === "phone") {
+      if (!state.open && fresh && !state.busy) openSheet(n);
+    } else if (state.open && fresh && !state.busy) {
+      if (n && n.owner === "recovered") {
+        startNote(-1); // the PC restarted mid-note: carry on, keeping what's typed here
+        return;
+      }
+      if (n && n.owner === "pc") movedAway();
+      else sendDraft(); // the PC has lost it (restarted): hand it back, moment and all
+    }
+    // Nothing on the PC, but this phone still holds an unsaved note.
+    var local = !n && !state.open ? loadLocal() : null;
+    state.ewLocal = !!(local && local.text && local.when);
+    var away = state.ewLocal || (n && !state.open && (n.owner === "pc" || n.owner === "recovered"));
+    $("elsewhere").className = away ? "elsewhere show" : "elsewhere";
+    if (!away) return;
+    if (state.ewLocal) {
+      $("ewTitle").textContent = "Unsaved note from " + local.when + (local.movie ? " in " + local.movie : "");
+      $("ewText").textContent = local.text;
+    } else {
+      $("ewTitle").textContent = n.owner === "pc"
+        ? "You're writing a note on the PC keyboard (" + n.timestamp + ")"
+        : "Unsaved note from " + n.timestamp + " in " + n.movie;
+      $("ewText").textContent = n.text || "";
+    }
+  }
+
+  function paint(s, t0) {
+    if (!s || s._status === undefined) return;
+    var ok = s.vlc === "ok";
+    var live = ok && s.playing;
+    $("dot").className = "dot" + (live ? (s.state === "playing" ? " live" : " paused") : "");
+    if (!ok) {
+      banner(s.error);
+      $("movie").textContent = "VLC isn't reachable";
+    } else if (!s.playing) {
+      banner("Nothing is playing. Open a film in VLC on your PC.");
+      $("movie").textContent = "Nothing playing";
+    } else {
+      banner("");
+      $("movie").textContent = s.movie;
+    }
+    $("time").textContent = live ? s.timestamp : "--:--:--";
+    $("len").textContent = live && s.length > 0 ? "of " + fmt(s.length) : " ";
+    $("bar").style.width = live && s.length > 0 ? Math.min(100, 100 * s.seconds / s.length) + "%" : "0";
+    var playing = live && s.state === "playing";
+    $("play").innerHTML = (playing ? "❚❚" : "▶︎") + "<small>" + (playing ? "pause" : "play") + "</small>";
+    ["play", "back", "fwd", "sPlay", "sBack", "sFwd"].forEach(function (id) { $(id).disabled = !live; });
+    var tb = $("types").children;
+    for (var i = 0; i < tb.length; i++) tb[i].disabled = !live;
+
+    paintNote(s.note, t0);
+    if (live && s.movie !== state.lastMovie) { state.lastMovie = s.movie; loadNotes(); }
+    if (!live) state.lastMovie = null;
+  }
+
+  var failures = 0;
+  function poll() {
+    if (document.hidden) return;
+    var t0 = Date.now();
+    api("status").then(function (s) { failures = 0; paint(s, t0); }).catch(function () {
+      failures++;
+      if (failures >= 2) {
+        banner("Can't reach your PC. Check that the phone is on the same Wi-Fi and VLC Commentary is running.");
+        $("dot").className = "dot";
+      }
+    });
+  }
+
+  function loadNotes() {
+    api("notes").then(function (r) {
+      var box = $("notes");
+      box.innerHTML = "";
+      var list = (r.notes || []).slice();
+      if (!list.length) { box.innerHTML = '<div class="empty">No notes yet. Tap a type above when something strikes you.</div>'; return; }
+      // Most recently written first.
+      list.sort(function (a, b) { return String(b.created).localeCompare(String(a.created)); });
+      list.slice(0, 12).forEach(function (n) {
+        var row = document.createElement("div");
+        row.className = "note";
+        row.style.setProperty("--c", colorOf(n.type));
+        var ts = document.createElement("div"); ts.className = "ts"; ts.textContent = n.timestamp;
+        var right = document.createElement("div");
+        var ty = document.createElement("div"); ty.className = "ty"; ty.textContent = n.type;
+        var tx = document.createElement("div"); tx.className = "tx"; tx.textContent = n.content;
+        right.appendChild(ty); right.appendChild(tx);
+        row.appendChild(ts); row.appendChild(right);
+        box.appendChild(row);
+      });
+      if (list.length > 12) {
+        var more = document.createElement("div");
+        more.className = "empty";
+        more.textContent = (list.length - 12) + " more in the notes folder on your PC.";
+        box.appendChild(more);
+      }
+    }).catch(function () {});
+  }
+
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) poll(); });
+  setInterval(poll, 1000);
+  poll();
+})();
+</script>
+</body>
+</html>

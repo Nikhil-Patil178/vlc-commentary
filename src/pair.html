@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Connect a phone</title>
+<style>
+  :root { --bg: #0c0c0e; --panel: #18181b; --line: #2e2e33; --text: #f4f4f5; --muted: #a1a1aa; --accent: #ff8800; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 24px; }
+  h1 { font-size: 28px; margin: 0 0 6px; }
+  .sub { color: var(--muted); margin: 0 0 32px; }
+  .card { display: grid; grid-template-columns: auto 1fr; gap: 32px; align-items: center; background: var(--panel); border-radius: 20px; padding: 28px; }
+  #qr { background: #fff; border-radius: 12px; padding: 12px; width: 264px; height: 264px; display: grid; place-items: center; color: #111; font-size: 14px; text-align: center; }
+  #qr svg { width: 240px; height: 240px; display: block; }
+  ol { margin: 0; padding-left: 20px; }
+  li { margin: 0 0 10px; }
+  code, .url { font-family: Consolas, ui-monospace, monospace; }
+  .url { display: block; word-break: break-all; background: #0c0c0e; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 6px 0 0; font-size: 14px; user-select: all; }
+  .alt { margin-top: 28px; color: var(--muted); font-size: 14px; }
+  .alt .url { font-size: 13px; }
+  h2 { font-size: 17px; margin: 36px 0 10px; }
+  .help li { color: var(--muted); }
+  .help b { color: var(--text); }
+  .warn { margin-top: 24px; padding: 14px 16px; border-radius: 12px; background: #3b1d1d; color: #fecaca; display: none; }
+  @media (max-width: 640px) { .card { grid-template-columns: 1fr; justify-items: center; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Use your phone as the remote</h1>
+  <p class="sub">Play, pause, skip and add notes from your phone while the film plays. No app needed.</p>
+
+  <div class="card">
+    <div id="qr">Loading QR code…</div>
+    <div>
+      <ol>
+        <li>Connect your phone to the <b>same Wi-Fi</b> as this PC.</li>
+        <li>Open the camera and scan the code, or type the address below into the phone's browser.</li>
+        <li>Add it to your home screen (Share → <i>Add to Home Screen</i> on iPhone, ⋮ → <i>Add to Home screen</i> on Android) so it's one tap next time.</li>
+      </ol>
+      <span class="url" id="main-url"></span>
+    </div>
+  </div>
+
+  <div class="warn" id="none">This PC doesn't seem to be on a home network right now. Connect it to Wi-Fi or Ethernet, then reopen this page from the tray menu.</div>
+
+  <div class="alt" id="alt" hidden>
+    If the phone can't open that address, try one of these instead (this PC has several network connections):
+    <div id="alt-list"></div>
+  </div>
+
+  <h2>If the phone can't connect</h2>
+  <ul class="help">
+    <li><b>Windows Firewall:</b> when Windows asked whether to allow VLC Commentary, it needed <b>Private networks</b> ticked. To fix it later: Start → <i>Allow an app through Windows Firewall</i> → Change settings → tick <b>Private</b> for VLC Commentary.</li>
+    <li><b>Network set to Public:</b> Settings → Network &amp; internet → Wi-Fi → your network → set <b>Network profile type</b> to <b>Private</b>.</li>
+    <li><b>Guest Wi-Fi or "AP isolation"</b> on the router stops devices seeing each other. Use the main network.</li>
+    <li>Keep this link private: anyone with it, on your Wi-Fi, can add notes and control playback.</li>
+  </ul>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js" referrerpolicy="no-referrer"></script>
+<script>
+  var urls = {{URLS_JSON}};
+  var qrBox = document.getElementById("qr");
+  if (!urls.length) {
+    document.getElementById("none").style.display = "block";
+    qrBox.textContent = "No network";
+  } else {
+    document.getElementById("main-url").textContent = urls[0];
+    if (urls.length > 1) {
+      document.getElementById("alt").hidden = false;
+      urls.slice(1).forEach(function (u) {
+        var s = document.createElement("span");
+        s.className = "url";
+        s.textContent = u;
+        document.getElementById("alt-list").appendChild(s);
+      });
+    }
+    if (window.qrcode) {
+      var q = qrcode(0, "M");
+      q.addData(urls[0]);
+      q.make();
+      qrBox.innerHTML = q.createSvgTag({ cellSize: 6, margin: 0, scalable: true });
+    } else {
+      qrBox.textContent = "The QR code needs an internet connection. Type the address shown here into your phone instead.";
+    }
+  }
+</script>
+</body>
+</html>

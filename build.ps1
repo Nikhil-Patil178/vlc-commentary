@@ -53,8 +53,10 @@ if (-not (Test-Path $icon)) {
 $refs = '/r:System.Web.Extensions.dll', '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll',
         '/r:System.Core.dll', '/r:Microsoft.CSharp.dll'
 
-# --- the app
-& $csc /nologo /target:winexe /optimize+ /win32icon:$icon /out:"$dist\VlcCommentary.exe" $refs "$root\src\*.cs"
+# --- the app (the phone remote's web pages are embedded in it)
+$pages = ('/resource:' + "$root\src\phone.html" + ',VlcCommentary.phone.html'),
+         ('/resource:' + "$root\src\pair.html" + ',VlcCommentary.pair.html')
+& $csc /nologo /target:winexe /optimize+ /win32icon:$icon /out:"$dist\VlcCommentary.exe" $refs $pages "$root\src\*.cs"
 if ($LASTEXITCODE -ne 0) { throw "App build failed" }
 
 # --- the installer, with the app embedded

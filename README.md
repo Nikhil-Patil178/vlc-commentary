@@ -84,6 +84,23 @@ Running it again upgrades in place and keeps your settings and notes.
 - If you click back into the film mid-note, the box stays open with your text. Press `Ctrl+Alt+N` to return to it.
 - Saving is silent. If a save ever fails, a red notice appears and your text is copied to the clipboard.
 
+### Use your phone as the remote
+
+Watch from the couch without touching the keyboard. Right-click the tray icon and tick **Phone remote (same Wi-Fi)**.
+A page opens on the PC with a QR code; scan it with your phone (no app to install) and add it to your home screen.
+
+- **Play / pause, −10 s, +10 s**: big buttons, with the film's time and progress.
+- **Tap Observation, Interpretation, Emotion or Question** the moment something strikes you. The timestamp is
+  taken at the tap, so typing (or speaking, using your keyboard's microphone) doesn't shift it.
+  Save with no text for a quick mark you can write up later.
+- Notes from the phone go into the same files as notes typed on the PC, and your latest notes are listed on the phone.
+- **Pause the movie while I type** applies here too: tapping a type pauses the film, and saving resumes it.
+
+The phone and PC must be on the same Wi-Fi. The first time, Windows asks whether to let VLC Commentary through the
+firewall: allow it on **Private networks**. Your Wi-Fi's network profile must be *Private*, not *Public*.
+The link contains a secret code, and the app only answers devices on a home network, so keep the link to yourself.
+**Connect a phone...** in the tray menu shows the QR code again.
+
 ### Where your notes go
 
 ```
