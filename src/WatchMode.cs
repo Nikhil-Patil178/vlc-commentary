@@ -57,23 +57,28 @@ namespace VlcCommentary
                 }
                 catch (Exception ex) { Log("--note failed: " + ex.Message); return 1; }
             }
-            return RunTray();
+            // VLC starts us with --with-vlc every time it opens (see the Lua hook the
+            // installer puts in VLC's lua\intf folder), and we quit when VLC closes.
+            bool withVlc = args.Length >= 1 && args[0] == "--with-vlc";
+            return RunTray(withVlc);
         }
 
-        static int RunTray()
+        static int RunTray(bool withVlc)
         {
             bool created;
             using (var mutex = new Mutex(true, "VlcCommentary.WatchMode", out created))
             {
                 if (!created)
                 {
-                    MessageBox.Show("VLC Commentary is already running.\nLook for its icon in the system tray.", "VLC Commentary");
+                    // Opening a second VLC window shouldn't nag; we're already there.
+                    if (!withVlc)
+                        MessageBox.Show("VLC Commentary is already running.\nLook for its icon in the system tray.", "VLC Commentary");
                     return 0;
                 }
                 try { SetProcessDPIAware(); } catch { }
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new TrayApp(Config.Load()));
+                Application.Run(new TrayApp(Config.Load(), withVlc));
                 return 0;
             }
         }
@@ -863,7 +868,11 @@ namespace VlcCommentary
         PhoneOverlay overlay;
         readonly Control ui; // runs phone requests on this (the UI) thread
 
-        public TrayApp(Config c)
+        // Started by VLC: quit once VLC has closed (checked every few seconds).
+        readonly System.Windows.Forms.Timer vlcWatch;
+        int vlcGoneChecks;
+
+        public TrayApp(Config c, bool followVlc)
         {
             cfg = c;
             vlc = new VlcClient(c);
@@ -940,11 +949,37 @@ namespace VlcCommentary
             else if (pending != null)
                 Tip("You have an unsaved note",
                     pending.Movie.Name + " at " + NoteStore.Fmt(pending.Seconds) + ". Press " + cfg.Hotkey + " to finish it.");
-            else
+            else if (!followVlc) // started by VLC: it opens every time, so stay quiet
                 Tip("VLC Commentary is running", "Press " + cfg.Hotkey + " while a movie plays to add a note.");
 
             if (cfg.Phone && !StartPhone(false))
                 phoneOn.Checked = false;
+
+            if (followVlc)
+            {
+                Program.Log("started by VLC; will exit when VLC closes");
+                vlcWatch = new System.Windows.Forms.Timer { Interval = 3000 };
+                vlcWatch.Tick += delegate { CheckVlcStillOpen(); };
+                vlcWatch.Start();
+            }
+        }
+
+        void CheckVlcStillOpen()
+        {
+            if (VlcRunning()) { vlcGoneChecks = 0; return; }
+            // Don't vanish mid-note; the draft would survive, but it's jarring.
+            if (openBox != null || current != null) return;
+            // Two misses in a row, so a quick VLC restart doesn't bounce us.
+            if (++vlcGoneChecks < 2) return;
+            Program.Log("VLC closed; exiting");
+            ExitThread();
+        }
+
+        static bool VlcRunning()
+        {
+            var ps = Process.GetProcessesByName("vlc");
+            foreach (var p in ps) p.Dispose();
+            return ps.Length > 0;
         }
 
         PhoneRemote phone;
@@ -1325,6 +1360,7 @@ namespace VlcCommentary
 
         protected override void ExitThreadCore()
         {
+            if (vlcWatch != null) vlcWatch.Dispose();
             PersistDraft();
             if (phone != null) phone.Dispose();
             CloseOverlay();
