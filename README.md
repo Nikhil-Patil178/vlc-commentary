@@ -64,7 +64,9 @@ The installer sets everything up for you, with no admin rights needed except to 
 - backs up `%APPDATA%\vlc\vlcrc`, then turns on VLC's web interface: `127.0.0.1` only (not reachable from
   other computers), random password, first free port from 8765
 - installs **FFmpeg** with winget so subtitles inside video files can be saved (optional)
-- adds a Start menu shortcut, can start the app when you sign in, and registers an uninstaller in **Settings → Apps**
+- adds a Start menu shortcut and registers an uninstaller in **Settings → Apps**
+- can start the app whenever you open VLC (a small Lua script in `%APPDATA%\vlc\lua\intf`); it closes
+  again when VLC closes, so nothing runs in the background when you aren't watching
 
 Running it again upgrades in place and keeps your settings and notes.
 

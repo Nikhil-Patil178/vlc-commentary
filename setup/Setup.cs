@@ -27,7 +27,7 @@ namespace VlcCommentary.Setup
 {
     static class SetupProgram
     {
-        public const string Version = "1.0.0";
+        public const string Version = "1.1.0";
         public const int DefaultPort = 8765;
 
         [STAThread]
@@ -57,9 +57,20 @@ namespace VlcCommentary.Setup
         {
             get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "VLC Commentary.lnk"); }
         }
+        // Older versions started the app at sign-in; we only remove this now.
         public static string StartupLink
         {
             get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), "VLC Commentary.lnk"); }
+        }
+        // A Lua interface script VLC runs when it opens; it starts the app.
+        public const string VlcHookName = "vlc_commentary";
+        public static string VlcHook
+        {
+            get
+            {
+                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                                    "vlc", "lua", "intf", VlcHookName + ".lua");
+            }
         }
         public const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\VlcCommentary";
     }
@@ -147,7 +158,8 @@ namespace VlcCommentary.Setup
 
         // Turns on VLC's web interface, localhost only, password-protected.
         // Backs up an existing vlcrc and returns the backup path (null if there was none).
-        public static string ConfigureVlc(string vlcrc, int port, string password)
+        // withVlc: also load our Lua hook so VLC starts the app whenever it opens.
+        public static string ConfigureVlc(string vlcrc, int port, string password, bool withVlc)
         {
             var utf8 = new UTF8Encoding(false);
             var lines = new List<string>();
@@ -164,16 +176,40 @@ namespace VlcCommentary.Setup
             SetOption(lines, "http-host", "127.0.0.1");
             SetOption(lines, "http-port", port.ToString());
             SetOption(lines, "http-password", password);
+            if (withVlc)
+            {
+                SetOption(lines, "extraintf", "luaintf");
+                SetOption(lines, "lua-intf", Paths.VlcHookName);
+            }
+            else RemoveHookOptions(lines);
             File.WriteAllLines(vlcrc, lines.ToArray(), utf8);
             return backup;
         }
 
-        // Removes "http" from VLC's extra interfaces (used by uninstall).
+        // Removes our extra interfaces ("http" and the Lua hook) from vlcrc (used by uninstall).
         public static bool DisableVlcWeb(string vlcrc)
         {
             if (!File.Exists(vlcrc)) return false;
             var utf8 = new UTF8Encoding(false);
             var lines = new List<string>(File.ReadAllLines(vlcrc, utf8));
+            bool changed = RemoveExtraIntf(lines, "http");
+            changed |= RemoveHookOptions(lines);
+            if (changed) File.WriteAllLines(vlcrc, lines.ToArray(), utf8);
+            return changed;
+        }
+
+        static bool RemoveHookOptions(List<string> lines)
+        {
+            bool ours = false;
+            for (int i = 0; i < lines.Count; i++)
+                if (lines[i].Trim() == "lua-intf=" + Paths.VlcHookName) { lines[i] = "#lua-intf=dummy"; ours = true; }
+            // Only drop luaintf if it was running our script, not something the user set up.
+            if (ours) RemoveExtraIntf(lines, "luaintf");
+            return ours;
+        }
+
+        static bool RemoveExtraIntf(List<string> lines, string name)
+        {
             bool changed = false;
             for (int i = 0; i < lines.Count; i++)
             {
@@ -181,12 +217,28 @@ namespace VlcCommentary.Setup
                 if (!m.Success) continue;
                 var keep = new List<string>();
                 foreach (var part in m.Groups[1].Value.Split(':'))
-                    if (part.Trim().Length > 0 && part.Trim() != "http") keep.Add(part.Trim());
-                lines[i] = keep.Count == 0 ? "#extraintf=" : "extraintf=" + string.Join(":", keep);
-                changed = true;
+                    if (part.Trim().Length > 0 && part.Trim() != name) keep.Add(part.Trim());
+                string next = keep.Count == 0 ? "#extraintf=" : "extraintf=" + string.Join(":", keep);
+                if (next != lines[i]) { lines[i] = next; changed = true; }
             }
-            if (changed) File.WriteAllLines(vlcrc, lines.ToArray(), utf8);
             return changed;
+        }
+
+        // The Lua script VLC runs on start. It launches the app, which exits when VLC does.
+        public static void WriteVlcHook(string script, string appExe)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(script));
+            File.WriteAllText(script,
+                "-- VLC Commentary: VLC runs this each time it opens, so the note-taking app\r\n" +
+                "-- starts with VLC and quits when VLC closes. Written by the VLC Commentary\r\n" +
+                "-- installer; uninstalling removes it.\r\n" +
+                "local app = [[" + appExe + "]]\r\n" +
+                "local f = io.open(app, \"rb\")\r\n" +
+                "if f then\r\n" +
+                "  f:close()\r\n" +
+                "  os.execute('start \"\" \"' .. app .. '\" --with-vlc')\r\n" +
+                "end\r\n",
+                new UTF8Encoding(false));
         }
 
         static void SetOption(List<string> lines, string key, string value)
@@ -304,7 +356,7 @@ namespace VlcCommentary.Setup
             top.Controls.Add(intro);
             if (!uninstall)
             {
-                startup = new CheckBox { Text = "Start VLC Commentary when I sign in", Checked = true, AutoSize = true, Location = new Point(20, 134) };
+                startup = new CheckBox { Text = "Start VLC Commentary whenever I open VLC (and close it with VLC)", Checked = true, AutoSize = true, Location = new Point(20, 134) };
                 ffmpeg = new CheckBox { Text = "Install FFmpeg so subtitles are saved with notes (about 100 MB)", Checked = true, AutoSize = true, Location = new Point(20, 158) };
                 top.Controls.Add(startup);
                 top.Controls.Add(ffmpeg);
@@ -419,8 +471,10 @@ namespace VlcCommentary.Setup
             cfg.Port = Steps.PickPort(cfg.Port > 0 ? cfg.Port : SetupProgram.DefaultPort);
 
             // 5. VLC's web interface
-            string backup = Steps.ConfigureVlc(Paths.Vlcrc, cfg.Port, cfg.Password);
+            string backup = Steps.ConfigureVlc(Paths.Vlcrc, cfg.Port, cfg.Password, wantStartup);
             Log("[ok] VLC web interface on 127.0.0.1:" + cfg.Port + (backup != null ? " (old VLC settings backed up)" : ""));
+            if (wantStartup) Steps.WriteVlcHook(Paths.VlcHook, Paths.AppExe);
+            else if (File.Exists(Paths.VlcHook)) File.Delete(Paths.VlcHook);
 
             // 6. FFmpeg for subtitles
             string ff = Subtitles.FindFfmpeg(cfg);
@@ -438,16 +492,23 @@ namespace VlcCommentary.Setup
 
             // 7. Shortcuts and Settings > Apps entry
             Steps.Shortcut(Paths.StartMenuLink, Paths.AppExe, null);
-            if (wantStartup) Steps.Shortcut(Paths.StartupLink, Paths.AppExe, null);
-            else if (File.Exists(Paths.StartupLink)) File.Delete(Paths.StartupLink);
+            if (File.Exists(Paths.StartupLink)) File.Delete(Paths.StartupLink); // from older versions
             Steps.RegisterUninstaller();
-            Log("[ok] Start menu shortcut" + (wantStartup ? " + starts when you sign in" : ""));
+            Log("[ok] Start menu shortcut" + (wantStartup ? " + starts whenever you open VLC" : ""));
 
             // 8. Go
-            Process.Start(Paths.AppExe);
             Log("");
-            Log("Done. VLC Commentary is running (orange icon in the system tray).");
-            Log("Open a movie in VLC and press Ctrl+Alt+N to add a note.");
+            if (wantStartup)
+            {
+                Log("Done. Open a movie in VLC: VLC Commentary starts with it (orange icon in the");
+                Log("system tray) and closes when VLC does. Press Ctrl+Alt+N to add a note.");
+            }
+            else
+            {
+                Process.Start(Paths.AppExe);
+                Log("Done. VLC Commentary is running (orange icon in the system tray).");
+                Log("Open a movie in VLC and press Ctrl+Alt+N to add a note.");
+            }
             Log("Notes are saved in: " + cfg.NotesDir);
             return true;
         }
@@ -456,7 +517,7 @@ namespace VlcCommentary.Setup
         {
             Log("Uninstalling VLC Commentary");
             Steps.StopApp();
-            foreach (var link in new[] { Paths.StartMenuLink, Paths.StartupLink })
+            foreach (var link in new[] { Paths.StartMenuLink, Paths.StartupLink, Paths.VlcHook })
                 if (File.Exists(link)) File.Delete(link);
             Log("[ok] App stopped, shortcuts removed");
 
